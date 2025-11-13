@@ -5,7 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { doc, onSnapshot, updateDoc, arrayUnion } from 'firebase/firestore';
 import { Copy, Check } from 'lucide-react';
 
-import { db } from '@/lib/firebase';
+import { useFirebase } from '@/components/firebase-provider';
 import { useAuth } from '@/components/auth-provider';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -17,6 +17,7 @@ export default function LobbyPage() {
   const params = useParams();
   const router = useRouter();
   const { user } = useAuth();
+  const { db } = useFirebase();
   const { toast } = useToast();
 
   const [game, setGame] = useState<any>(null);
@@ -33,7 +34,7 @@ export default function LobbyPage() {
   }, []);
 
   useEffect(() => {
-    if (!gameId || !user) return;
+    if (!gameId || !user || !db) return;
 
     const gameRef = doc(db, 'games', gameId);
 
@@ -68,7 +69,7 @@ export default function LobbyPage() {
     });
 
     return () => unsubscribe();
-  }, [gameId, user, router, toast]);
+  }, [gameId, user, router, toast, db]);
 
   const copyToClipboard = () => {
     navigator.clipboard.writeText(inviteLink);

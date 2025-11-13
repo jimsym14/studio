@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from 'react';
 import { onAuthStateChanged, signInAnonymously, type User } from 'firebase/auth';
-import { auth } from '@/lib/firebase';
+import { useFirebase } from './firebase-provider';
 import { Skeleton } from './ui/skeleton';
 
 interface AuthContextType {
@@ -19,10 +19,12 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
+  const { auth } = useFirebase();
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    if (!auth) return;
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (user) {
         setUser(user);
@@ -40,7 +42,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     return () => unsubscribe();
-  }, []);
+  }, [auth]);
 
   if (loading) {
     return (
