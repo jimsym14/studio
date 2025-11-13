@@ -34,7 +34,7 @@ export default function Home() {
         <ThemeToggle />
       </div>
 
-      <div className="absolute top-8">
+      <div className="text-center">
         <Logo />
       </div>
       
@@ -42,7 +42,7 @@ export default function Home() {
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5 }}
-        className="text-center mt-32"
+        className="text-center mt-8"
       >
         <GreetingChanger />
         <Separator className="mt-6 w-2/3 mx-auto" />
