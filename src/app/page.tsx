@@ -4,13 +4,13 @@ import { useState } from 'react';
 import { User, Users } from 'lucide-react';
 import { motion } from 'framer-motion';
 
-import { Button } from '@/components/ui/button';
 import { Logo } from '@/components/logo';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { LanguageToggle } from '@/components/language-toggle';
 import { SettingsModal } from '@/components/settings-modal';
 import GreetingChanger from '@/components/greeting-changer';
 import { Separator } from '@/components/ui/separator';
+import { MagicButton } from '@/components/magic-button'; // Import the new MagicButton
 
 type GameType = 'solo' | 'multiplayer';
 
@@ -23,9 +23,6 @@ export default function Home() {
   const handleOpenModal = (type: GameType) => {
     setModalState({ isOpen: true, gameType: type });
   };
-
-  const buttonStyle =
-    'h-16 w-15% text-lg font-moms rounded-none uppercase flex items-center justify-center gap-4 transition-colors duration-300 ease-in-out hover:bg-primary';
 
   const iconStyle = 'w-8 h-8';
 
@@ -40,7 +37,7 @@ export default function Home() {
         <Logo />
       </div>
 
-      <div className="relative w-full max-w-lg mt-8 p-6 border rounded-lg dark:border-slate-700 border-orange-300 bg-background/70 dark:bg-slate-800/50 backdrop-blur-sm z-10">
+      <div className="relative w-full max-w-lg mt-8 p-6 border rounded-lg bg-card/70 backdrop-blur-sm z-10">
         <motion.div
           initial={{ opacity: 0, y: -20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -54,25 +51,25 @@ export default function Home() {
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5, delay: 0.2 }}
-          className="mt-12 flex flex-col justify-center gap-8 w-full"
+          transition={{ duration: 0.5, delay: 0.01 }}
+          className="mt-12 flex flex-col items-center justify-center gap-8 w-full"
         >
-          <Button
-            className={buttonStyle}
+          <MagicButton
             onClick={() => handleOpenModal('solo')}
             aria-label="Start Singleplayer Game"
+            className="w-1/2 h-15"
           >
             <User className={iconStyle} />
             Solo
-          </Button>
-          <Button
-            className={buttonStyle}
+          </MagicButton>
+          <MagicButton
             onClick={() => handleOpenModal('multiplayer')}
             aria-label="Start Multiplayer Game"
+            className="w-1/2 h-15"
           >
             <Users className={iconStyle} />
             Multiplayer
-          </Button>
+          </MagicButton>
         </motion.div>
       </div>
 

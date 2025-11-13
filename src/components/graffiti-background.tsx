@@ -60,24 +60,37 @@ const generateLetters = (count: number): Letter[] => {
 export function GraffitiBackground() {
   const [letters, setLetters] = useState<Letter[]>([]);
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+  const [windowSize, setWindowSize] = useState({ width: 0, height: 0 });
   const isMobile = useIsMobile();
 
   useEffect(() => {
     setLetters(generateLetters(80));
 
+    const handleResize = () => {
+      setWindowSize({ width: window.innerWidth, height: window.innerHeight });
+    };
+
+    const handleMouseMove = (event: MouseEvent) => {
+      setMousePos({ x: event.clientX, y: event.clientY });
+    };
+    
+    handleResize(); // Set initial size on client mount
+    window.addEventListener('resize', handleResize);
+
     if (!isMobile) {
-      const handleMouseMove = (event: MouseEvent) => {
-        setMousePos({ x: event.clientX, y: event.clientY });
-      };
       window.addEventListener('mousemove', handleMouseMove);
-      return () => {
-        window.removeEventListener('mousemove', handleMouseMove);
-      };
     }
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      if (!isMobile) {
+        window.removeEventListener('mousemove', handleMouseMove);
+      }
+    };
   }, [isMobile]);
 
-  const moveX = !isMobile ? (mousePos.x - window.innerWidth / 2) / (window.innerWidth / 2) : 0;
-  const moveY = !isMobile ? (mousePos.y - window.innerHeight / 2) / (window.innerHeight / 2) : 0;
+  const moveX = !isMobile && windowSize.width > 0 ? (mousePos.x - windowSize.width / 2) / (windowSize.width / 2) : 0;
+  const moveY = !isMobile && windowSize.height > 0 ? (mousePos.y - windowSize.height / 2) / (windowSize.height / 2) : 0;
 
   return (
     <div className="fixed inset-0 -z-10 pointer-events-none">

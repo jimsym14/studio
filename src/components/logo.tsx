@@ -12,8 +12,9 @@ export function Logo({ className }: { className?: string }) {
       <img
         src="/logo.png"
         alt="WordMates Logo"
-        width={300}
-        height={150}
+        width={400}
+        height={200}
+        
         className={cn('relative z-10', className)}
       />
     </div>

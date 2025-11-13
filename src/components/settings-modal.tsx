@@ -31,6 +31,7 @@ import { Separator } from '@/components/ui/separator';
 import { createGame } from '@/lib/actions/game';
 import { useToast } from '@/hooks/use-toast';
 import { useLocalStorage } from '@/hooks/use-local-storage';
+import { cn } from '@/lib/utils';
 
 type GameType = 'solo' | 'multiplayer' | null;
 
@@ -61,7 +62,7 @@ const firebaseConfig = {
 export function SettingsModal({ isOpen, gameType, onClose }: SettingsModalProps) {
   const router = useRouter();
   const { toast } = useToast();
-  const [multiplayerMode, setMultiplayerMode] = useState<'pvp' | 'co-op' | null>(null);
+  const [multiplayerMode, setMultiplayerMode] = useState<'pvp' | 'co-op'>('pvp');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [userId, setUserId] = useLocalStorage('wordmates-userId', '');
 
@@ -83,7 +84,7 @@ export function SettingsModal({ isOpen, gameType, onClose }: SettingsModalProps)
   useEffect(() => {
     if (isOpen) {
       form.reset();
-      setMultiplayerMode(null);
+      setMultiplayerMode('pvp');
     }
   }, [isOpen, form]);
 
@@ -99,16 +100,6 @@ export function SettingsModal({ isOpen, gameType, onClose }: SettingsModalProps)
     
     setIsSubmitting(true);
     try {
-      if (gameType === 'multiplayer' && !multiplayerMode) {
-        toast({
-          variant: "destructive",
-          title: "Mode Required",
-          description: "Please select PvP or Co-op mode.",
-        });
-        setIsSubmitting(false);
-        return;
-      }
-      
       const gameSettings = {
         ...values,
         gameType,
@@ -168,13 +159,15 @@ export function SettingsModal({ isOpen, gameType, onClose }: SettingsModalProps)
                           <span className="text-lg font-bold">{field.value}</span>
                         </div>
                         <FormControl>
-                          <Slider
-                            min={4}
-                            max={6}
-                            step={1}
-                            value={[field.value]}
-                            onValueChange={(value) => field.onChange(value[0])}
-                          />
+                           <div className="px-2 sm:px-0">
+                            <Slider
+                              min={4}
+                              max={6}
+                              step={1}
+                              value={[field.value]}
+                              onValueChange={(value) => field.onChange(value[0])}
+                            />
+                           </div>
                         </FormControl>
                       </FormItem>
                     )}
@@ -227,8 +220,18 @@ export function SettingsModal({ isOpen, gameType, onClose }: SettingsModalProps)
                       <div className="space-y-2">
                         <FormLabel>Multiplayer Mode</FormLabel>
                         <div className="grid grid-cols-2 gap-4">
-                            <Button type="button" variant={multiplayerMode === 'pvp' ? 'default' : 'outline'} className="h-20 text-lg" onClick={() => setMultiplayerMode('pvp')}><Swords className="mr-2" />PvP</Button>
-                            <Button type="button" variant={multiplayerMode === 'co-op' ? 'default' : 'outline'} className="h-20 text-lg" onClick={() => setMultiplayerMode('co-op')}><Handshake className="mr-2" />Co-op</Button>
+                          <div 
+                            className={cn('btn-neu', { 'btn-neu-pressed': multiplayerMode === 'pvp' })}
+                            onClick={() => setMultiplayerMode('pvp')}
+                           >
+                            <Swords className="mr-2" />PvP
+                          </div>
+                          <div 
+                            className={cn('btn-neu', { 'btn-neu-pressed': multiplayerMode === 'co-op' })}
+                            onClick={() => setMultiplayerMode('co-op')}
+                          >
+                            <Handshake className="mr-2" />Co-op
+                          </div>
                         </div>
                          <FormMessage />
                       </div>
