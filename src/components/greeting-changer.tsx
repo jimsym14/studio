@@ -30,7 +30,7 @@ const sentenceVariants = {
   hidden: { opacity: 0 },
   visible: (i = 1) => ({
     opacity: 1,
-    transition: { staggerChildren: 0.04, delayChildren: 0.2 * i },
+    transition: { staggerChildren: 0.02, delayChildren: 0.05 * i },
   }),
 };
 
@@ -40,8 +40,9 @@ const letterVariants = {
     y: 0,
     transition: {
       type: 'spring',
-      damping: 12,
-      stiffness: 200,
+      damping: 10,
+      stiffness: 150,
+      duration: 0.1
     },
   },
   hidden: {
@@ -49,8 +50,9 @@ const letterVariants = {
     y: 20,
     transition: {
       type: 'spring',
-      damping: 12,
-      stiffness: 200,
+      damping: 10,
+      stiffness: 150,
+      duration: 0.1
     },
   },
 };
@@ -78,7 +80,7 @@ export function GreetingChanger() {
       <AnimatePresence mode="wait">
          <motion.h2
             key={currentIndex}
-            className="font-comic text-3xl md:text-4xl font-bold text-primary tracking-wider"
+            className="font-comic text-xl md:text-2xl font-bold text-primary tracking-wider"
             variants={sentenceVariants}
             initial="hidden"
             animate="visible"

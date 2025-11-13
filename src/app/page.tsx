@@ -10,6 +10,7 @@ import { ThemeToggle } from '@/components/theme-toggle';
 import { LanguageToggle } from '@/components/language-toggle';
 import { SettingsModal } from '@/components/settings-modal';
 import { GreetingChanger } from '@/components/greeting-changer';
+import { Separator } from '@/components/ui/separator';
 
 type GameType = 'solo' | 'multiplayer';
 
@@ -27,27 +28,31 @@ export default function Home() {
     'h-24 text-xl font-semibold';
 
   return (
-    <div className="relative flex flex-col items-center justify-start min-h-screen p-4 pt-20 overflow-hidden">
+    <div className="relative flex flex-col items-center justify-start min-h-screen p-4 pt-8 overflow-hidden">
       <div className="absolute top-4 right-4 flex items-center gap-4">
         <LanguageToggle />
         <ThemeToggle />
       </div>
 
+      <div className="absolute top-8">
+        <Logo />
+      </div>
+      
       <motion.div
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5 }}
-        className="text-center"
+        className="text-center mt-32"
       >
-        <Logo />
         <GreetingChanger />
+        <Separator className="mt-6 w-2/3 mx-auto" />
       </motion.div>
 
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5, delay: 0.2 }}
-        className="mt-24 grid grid-cols-1 sm:grid-cols-2 gap-8 w-full max-w-lg"
+        className="mt-12 flex flex-col gap-8 w-full max-w-lg"
       >
         <Button
           className={buttonStyle}
