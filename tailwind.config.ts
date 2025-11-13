@@ -13,7 +13,7 @@ export default {
         body: ['Spline Sans', 'sans-serif'],
         headline: ['Spline Sans', 'sans-serif'],
         code: ['monospace'],
-        comic: ['Bangers', 'cursive'],
+        comic: ['Soopafresh', 'cursive'],
       },
       colors: {
         background: 'hsl(var(--background))',

@@ -3,6 +3,13 @@
 @tailwind utilities;
 
 @layer base {
+  @font-face {
+    font-family: 'Soopafresh';
+    src: url('/soopafre.ttf') format('truetype');
+    font-weight: normal;
+    font-style: normal;
+  }
+  
   :root {
     --background: 0 0% 100%; /* White */
     --foreground: 222.2 84% 4.9%; /* Dark Gray */
