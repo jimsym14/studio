@@ -23,7 +23,7 @@ export default function Home() {
   };
 
   const buttonStyle =
-    'h-24 text-2xl font-bold border-4 border-foreground/50 shadow-[8px_8px_0px_hsl(var(--primary))] hover:shadow-[10px_10px_0px_hsl(var(--primary))] active:shadow-[4px_4px_0px_hsl(var(--primary))] transition-all duration-200 ease-in-out transform active:translate-x-1 active:translate-y-1';
+    'h-24 text-xl font-semibold';
 
   return (
     <div className="relative flex flex-col items-center justify-center min-h-screen p-4 overflow-hidden">
@@ -39,7 +39,7 @@ export default function Home() {
         className="text-center"
       >
         <Logo />
-        <p className="mt-2 text-lg text-muted-foreground max-w-md mx-auto">
+        <p className="mt-4 text-lg text-muted-foreground max-w-md mx-auto">
           A real-time, social multiplayer word-guessing game.
         </p>
       </motion.div>
@@ -55,7 +55,7 @@ export default function Home() {
           onClick={() => handleOpenModal('solo')}
           aria-label="Start Singleplayer Game"
         >
-          <User className="w-8 h-8 mr-4" />
+          <User className="w-6 h-6 mr-3" />
           Solo
         </Button>
         <Button
@@ -63,7 +63,7 @@ export default function Home() {
           onClick={() => handleOpenModal('multiplayer')}
           aria-label="Start Multiplayer Game"
         >
-          <Users className="w-8 h-8 mr-4" />
+          <Users className="w-6 h-6 mr-3" />
           Multiplayer
         </Button>
       </motion.div>
