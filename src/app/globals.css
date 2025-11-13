@@ -11,16 +11,16 @@
   }
   
   :root {
-    --background: 0 0% 100%; /* White */
+    --background: 40 8% 87%; /* Custom White */
     --foreground: 222.2 84% 4.9%; /* Dark Gray */
 
-    --card: 0 0% 100%;
+    --card: 40 8% 87%;
     --card-foreground: 222.2 84% 4.9%;
  
-    --popover: 0 0% 100%;
+    --popover: 40 8% 87%;
     --popover-foreground: 222.2 84% 4.9%;
  
-    --primary: 34.9 91.4% 58.4%; /* Orange */
+    --primary: 25 79% 52%; /* Custom Orange */
     --primary-foreground: 210 40% 98%;
  
     --secondary: 210 40% 96.1%;
@@ -29,7 +29,7 @@
     --muted: 210 40% 96.1%;
     --muted-foreground: 215.4 16.3% 46.9%;
  
-    --accent: 142.1 76.2% 36.3%; /* Green */
+    --accent: 92 36% 41%; /* Custom Green */
     --accent-foreground: 210 40% 98%;
  
     --destructive: 0 84.2% 60.2%;
@@ -50,32 +50,32 @@
  
   .dark {
     --background: 225 9% 9%; /* Dark Gray */
-    --foreground: 210 40% 98%;
+    --foreground: 40 8% 87%; /* Custom White */
 
     --card: 225 9% 12%;
-    --card-foreground: 210 40% 98%;
+    --card-foreground: 40 8% 87%;
  
     --popover: 225 9% 9%;
-    --popover-foreground: 210 40% 98%;
+    --popover-foreground: 40 8% 87%;
  
-    --primary: 34.9 91.4% 58.4%; /* Orange */
+    --primary: 25 79% 52%; /* Custom Orange */
     --primary-foreground: 210 40% 98%;
  
     --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
+    --secondary-foreground: 40 8% 87%;
  
     --muted: 217.2 32.6% 17.5%;
     --muted-foreground: 215 20.2% 65.1%;
  
-    --accent: 142.1 76.2% 36.3%; /* Green */
+    --accent: 92 36% 41%; /* Custom Green */
     --accent-foreground: 210 40% 98%;
  
     --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
+    --destructive-foreground: 40 8% 87%;
  
     --border: 217.2 32.6% 17.5%;
     --input: 217.2 32.6% 17.5%;
-    --ring: 34.9 91.4% 58.4%;
+    --ring: 25 79% 52%;
 
     --chart-1: 220 70% 50%;
     --chart-2: 160 60% 45%;
