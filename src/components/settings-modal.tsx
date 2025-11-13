@@ -30,7 +30,7 @@ import { Slider } from '@/components/ui/slider';
 import { Separator } from '@/components/ui/separator';
 import { createGame } from '@/lib/actions/game';
 import { useToast } from '@/hooks/use-toast';
-import { useAuth } from './auth-provider';
+import { useLocalStorage } from '@/hooks/use-local-storage';
 
 type GameType = 'solo' | 'multiplayer' | null;
 
@@ -61,9 +61,15 @@ const firebaseConfig = {
 export function SettingsModal({ isOpen, gameType, onClose }: SettingsModalProps) {
   const router = useRouter();
   const { toast } = useToast();
-  const { user } = useAuth();
   const [multiplayerMode, setMultiplayerMode] = useState<'pvp' | 'co-op' | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [userId, setUserId] = useLocalStorage('wordmates-userId', '');
+
+  useEffect(() => {
+    if (!userId) {
+      setUserId(`user_${Math.random().toString(36).substring(2, 11)}`);
+    }
+  }, [userId, setUserId]);
 
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
@@ -82,11 +88,11 @@ export function SettingsModal({ isOpen, gameType, onClose }: SettingsModalProps)
   }, [isOpen, form]);
 
   const handleStartGame = async (values: FormValues) => {
-    if (!user) {
+    if (!userId) {
       toast({
         variant: "destructive",
-        title: "Authentication Error",
-        description: "You must be signed in to create a game.",
+        title: "User Error",
+        description: "Could not identify user. Please refresh and try again.",
       });
       return;
     }
@@ -107,10 +113,9 @@ export function SettingsModal({ isOpen, gameType, onClose }: SettingsModalProps)
         ...values,
         gameType,
         multiplayerMode: gameType === 'multiplayer' ? multiplayerMode : null,
-        creatorId: user.uid,
+        creatorId: userId,
       };
       
-      // Use a server action to create the game
       const gameId = await createGame(gameSettings, firebaseConfig);
       
       if (gameId) {

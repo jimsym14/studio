@@ -6,19 +6,19 @@ import { doc, onSnapshot, updateDoc, arrayUnion } from 'firebase/firestore';
 import { Copy, Check } from 'lucide-react';
 
 import { useFirebase } from '@/components/firebase-provider';
-import { useAuth } from '@/components/auth-provider';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
 import { Logo } from '@/components/logo';
 import { Skeleton } from '@/components/ui/skeleton';
+import { useLocalStorage } from '@/hooks/use-local-storage';
 
 export default function LobbyPage() {
   const params = useParams();
   const router = useRouter();
-  const { user } = useAuth();
   const { db } = useFirebase();
   const { toast } = useToast();
+  const [userId] = useLocalStorage('wordmates-userId', '');
 
   const [game, setGame] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -34,7 +34,7 @@ export default function LobbyPage() {
   }, []);
 
   useEffect(() => {
-    if (!gameId || !user || !db) return;
+    if (!gameId || !userId || !db) return;
 
     const gameRef = doc(db, 'games', gameId);
 
@@ -43,16 +43,23 @@ export default function LobbyPage() {
         const gameData = docSnap.data();
         setGame(gameData);
 
-        const isPlayer = gameData.players.includes(user.uid);
+        const isPlayer = gameData.players.includes(userId);
 
         // If user is not in the game and game is waiting, join
-        if (!isPlayer && gameData.status === 'waiting') {
+        if (!isPlayer && gameData.status === 'waiting' && gameData.players.length < 2) {
           await updateDoc(gameRef, {
-            players: arrayUnion(user.uid),
-            status: 'in_progress', // Assuming 2 players start the game
+            players: arrayUnion(userId),
+          });
+        }
+        
+        // If 2 players have joined, start the game
+        if (gameData.players.length === 2 && gameData.status === 'waiting') {
+           await updateDoc(gameRef, {
+            status: 'in_progress',
           });
           toast({ title: "Player joined!", description: "The game is starting." });
         }
+
 
         if (gameData.status === 'in_progress') {
           router.push(`/game/${gameId}`);
@@ -69,7 +76,7 @@ export default function LobbyPage() {
     });
 
     return () => unsubscribe();
-  }, [gameId, user, router, toast, db]);
+  }, [gameId, userId, router, toast, db]);
 
   const copyToClipboard = () => {
     navigator.clipboard.writeText(inviteLink);
