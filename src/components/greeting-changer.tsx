@@ -30,53 +30,45 @@ const sentenceVariants = {
   hidden: { opacity: 0 },
   visible: (i = 1) => ({
     opacity: 1,
-    transition: { staggerChildren: 0.02, delayChildren: 0.05 * i },
+    transition: { staggerChildren: 0.0005, delayChildren: 0.001 * i },
   }),
 };
 
 const letterVariants = {
+  hidden: { opacity: 0, y: 50 },
   visible: {
     opacity: 1,
     y: 0,
     transition: {
       type: 'spring',
-      damping: 10,
-      stiffness: 150,
-      duration: 0.1
-    },
-  },
-  hidden: {
-    opacity: 0,
-    y: 20,
-    transition: {
-      type: 'spring',
-      damping: 10,
-      stiffness: 150,
-      duration: 0.1
+      damping: 12,
+      stiffness: 200,
     },
   },
 };
 
-
-export function GreetingChanger() {
+export default function GreetingChanger() {
   const [currentIndex, setCurrentIndex] = useState(0);
+  const [currentGreeting, setCurrentGreeting] = useState(greetings[0]);
 
   useEffect(() => {
-    setCurrentIndex(Math.floor(Math.random() * greetings.length));
+    const interval = setInterval(() => {
+      changeGreeting();
+    }, 7000); // Change greeting every 5 seconds
+
+    return () => clearInterval(interval);
   }, []);
 
   const changeGreeting = () => {
-    let nextIndex;
-    do {
-      nextIndex = Math.floor(Math.random() * greetings.length);
-    } while (nextIndex === currentIndex);
-    setCurrentIndex(nextIndex);
+    setCurrentIndex((prevIndex) => {
+      const newIndex = (prevIndex + 1) % greetings.length;
+      setCurrentGreeting(greetings[newIndex]);
+      return newIndex;
+    });
   };
-  
-  const currentGreeting = greetings[currentIndex];
 
   return (
-    <div className="mt-4 cursor-pointer" onClick={changeGreeting}>
+    <div className="mt-4">
       <AnimatePresence mode="wait">
          <motion.h2
             key={currentIndex}

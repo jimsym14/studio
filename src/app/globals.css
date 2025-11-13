@@ -9,6 +9,13 @@
     font-weight: normal;
     font-style: normal;
   }
+
+  @font-face {
+    font-family: 'Moms';
+    src: url('/moms.otf') format('opentype');
+    font-weight: normal;
+    font-style: normal;
+  }
   
   :root {
     --background: 40 8% 87%; /* Custom White */
@@ -20,7 +27,7 @@
     --popover: 40 8% 87%;
     --popover-foreground: 222.2 84% 4.9%;
  
-    --primary: 25 79% 52%; /* Custom Orange */
+    --primary: 25 79% 62%; /* Custom Orange (Paler) */
     --primary-foreground: 210 40% 98%;
  
     --secondary: 210 40% 96.1%;
@@ -77,7 +84,7 @@
     --input: 217.2 32.6% 17.5%;
     --ring: 25 79% 52%;
 
-    --chart-1: 220 70% 50%;
+    --chart-1: 220 70% 60%; /* Paler Blue */
     --chart-2: 160 60% 45%;
     --chart-3: 30 80% 55%;
     --chart-4: 280 65% 60%;
@@ -91,5 +98,17 @@
   }
   body {
     @apply bg-background text-foreground;
+  }
+}
+
+@keyframes float {
+  0% {
+    transform: translateY(0px) translateX(0px) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-40px) translateX(20px) rotate(6deg);
+  }
+  100% {
+    transform: translateY(0px) translateX(0px) rotate(0deg);
   }
 }
