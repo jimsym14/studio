@@ -9,6 +9,7 @@ import { Logo } from '@/components/logo';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { LanguageToggle } from '@/components/language-toggle';
 import { SettingsModal } from '@/components/settings-modal';
+import { GreetingChanger } from '@/components/greeting-changer';
 
 type GameType = 'solo' | 'multiplayer';
 
@@ -39,9 +40,7 @@ export default function Home() {
         className="text-center"
       >
         <Logo />
-        <p className="mt-4 text-lg text-muted-foreground max-w-md mx-auto">
-          A real-time, social multiplayer word-guessing game.
-        </p>
+        <GreetingChanger />
       </motion.div>
 
       <motion.div
