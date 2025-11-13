@@ -27,7 +27,7 @@ export default function Home() {
     'h-24 text-xl font-semibold';
 
   return (
-    <div className="relative flex flex-col items-center justify-center min-h-screen p-4 overflow-hidden">
+    <div className="relative flex flex-col items-center justify-start min-h-screen p-4 pt-20 overflow-hidden">
       <div className="absolute top-4 right-4 flex items-center gap-4">
         <LanguageToggle />
         <ThemeToggle />
@@ -47,7 +47,7 @@ export default function Home() {
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5, delay: 0.2 }}
-        className="mt-16 grid grid-cols-1 sm:grid-cols-2 gap-8 w-full max-w-lg"
+        className="mt-24 grid grid-cols-1 sm:grid-cols-2 gap-8 w-full max-w-lg"
       >
         <Button
           className={buttonStyle}
