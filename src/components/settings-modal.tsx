@@ -30,7 +30,7 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Separator } from '@/components/ui/separator';
 import { createGame } from '@/lib/actions/game';
 import { useToast } from '@/hooks/use-toast';
-import { useLocalStorage } from '@/hooks/use-local-storage';
+import { useFirebase } from '@/components/firebase-provider';
 import { cn } from '@/lib/utils';
 
 type GameType = 'solo' | 'multiplayer' | null;
@@ -63,18 +63,12 @@ export function SettingsModal({ isOpen, gameType, onClose }: SettingsModalProps)
   const router = useRouter();
   const { toast } = useToast();
   const { theme } = useTheme();
+  const { userId } = useFirebase();
   const [multiplayerMode, setMultiplayerMode] = useState<'pvp' | 'co-op'>('pvp');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [userId, setUserId] = useLocalStorage('wordmates-userId', '');
   const [hoveredButton, setHoveredButton] = useState<string | null>(null);
   const [clickedButton, setClickedButton] = useState<string | null>(null);
-
-
-  useEffect(() => {
-    if (!userId) {
-      setUserId(`user_${Math.random().toString(36).substring(2, 11)}`);
-    }
-  }, [userId, setUserId]);
+  const isAuthReady = Boolean(userId);
 
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
@@ -312,8 +306,14 @@ export function SettingsModal({ isOpen, gameType, onClose }: SettingsModalProps)
                 </form>
               </Form>
               <DialogFooter className="p-6 pt-4">
-                <Button type="submit" form="settings-form" size="lg" className="w-full h-14 text-xl" disabled={isSubmitting}>
-                  {isSubmitting ? 'Starting...' : 'Start Game'}
+                <Button
+                  type="submit"
+                  form="settings-form"
+                  size="lg"
+                  className="w-full h-14 text-xl"
+                  disabled={isSubmitting || !isAuthReady}
+                >
+                  {!isAuthReady ? 'Connecting…' : isSubmitting ? 'Starting...' : 'Start Game'}
                 </Button>
               </DialogFooter>
             </motion.div>

@@ -37,6 +37,7 @@ interface Letter {
   fontFamily: string;
   depth: number;
   animationDuration: number;
+  animationPhase: number;
 }
 
 const generateLetters = (count: number): Letter[] => {
@@ -47,25 +48,24 @@ const generateLetters = (count: number): Letter[] => {
       x: Math.random() * 100,
       y: Math.random() * 100,
       rotation: Math.random() * 120 - 60,
-      opacity: 0.05 + Math.random() * 0.2,
+      opacity: 0.03 + Math.random() * 0.12,
       fontSize: 2 + Math.random() * 6,
       fontFamily: fontFamilies[Math.floor(Math.random() * fontFamilies.length)],
       depth: 0.1 + Math.random() * 0.9,
       animationDuration: 10 + Math.random() * 15,
+      animationPhase: Math.random(),
     });
   }
   return letters;
 };
 
 export function GraffitiBackground() {
-  const [letters, setLetters] = useState<Letter[]>([]);
+  const [letters] = useState<Letter[]>(() => generateLetters(80));
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const [windowSize, setWindowSize] = useState({ width: 0, height: 0 });
   const isMobile = useIsMobile();
 
   useEffect(() => {
-    setLetters(generateLetters(80));
-
     const handleResize = () => {
       setWindowSize({ width: window.innerWidth, height: window.innerHeight });
     };
@@ -95,6 +95,11 @@ export function GraffitiBackground() {
   return (
     <div className="fixed inset-0 -z-10 pointer-events-none">
       {letters.map((letter, i) => {
+        const distanceFromCenter = Math.min(
+          1,
+          Math.hypot(letter.x - 50, letter.y - 50) / 60
+        );
+        const opacity = letter.opacity * (0.45 + distanceFromCenter * 0.55);
         const parallaxX = -moveX * 30 * letter.depth;
         const parallaxY = -moveY * 30 * letter.depth;
 
@@ -109,19 +114,18 @@ export function GraffitiBackground() {
             }}
           >
             <span // This inner span handles the rotation and float animation
-              className={cn(
-                'text-primary dark:text-chart-1 select-none',
-                letter.fontFamily,
-                { 'animate-float': isMobile } // Apply float animation only on mobile
-              )}
+              className={cn('select-none', letter.fontFamily, {
+                'animate-float': isMobile,
+              })}
               style={{
                 display: 'inline-block',
                 transform: `rotate(${letter.rotation}deg)`,
-                opacity: letter.opacity,
+                opacity,
                 fontSize: `${letter.fontSize}rem`,
                 lineHeight: 1,
                 animationDuration: `${letter.animationDuration}s`,
-                animationDelay: `${-letter.animationDuration * Math.random()}s`,
+                animationDelay: `${-letter.animationDuration * letter.animationPhase}s`,
+                color: 'hsl(var(--floating-letter))',
               }}
             >
               {letter.char}

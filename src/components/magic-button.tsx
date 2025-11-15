@@ -65,24 +65,24 @@ export function MagicButton({
         transformStyle: 'preserve-3d',
       }}
       className={cn(
-        'relative h-20 rounded-2xl border-2 border-primary bg-primary/10 p-4 font-moms uppercase text-primary backdrop-blur-md text-2xl', // Reduced opacity
+        'relative h-20 rounded-2xl border border-primary/60 bg-[hsl(var(--primary))] p-4 font-moms text-lg uppercase text-[hsl(var(--button-contrast-light))] shadow-[0_25px_45px_rgba(0,0,0,0.25)] backdrop-blur-md transition-all duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 focus-visible:ring-offset-2 focus-visible:ring-offset-background dark:text-[hsl(var(--button-contrast-dark))]',
         className
       )}
     >
       {/* Shine Effect */}
       <motion.div
-        className="absolute inset-0 z-20 rounded-2xl"
+        className="absolute inset-0 z-20 rounded-2xl mix-blend-screen"
         style={{
           background: useTransform(
             [shineMouseX, shineMouseY],
             ([x, y]) =>
               x !== -1
-                ? `radial-gradient(circle at ${x}px ${y}px, hsl(var(--primary)) 0%, transparent 40%)` // Increased shine size
+                ? `radial-gradient(circle at ${x}px ${y}px, rgba(255,255,255,0.95) 0%, rgba(255,255,255,0.2) 35%, transparent 60%)`
                 : 'transparent'
           ),
           opacity: useTransform(
             [shineMouseX, shineMouseY],
-            ([x, y]) => (x !== -1 ? 0.6 : 0) // Increased shine opacity
+            ([x, y]) => (x !== -1 ? 0.9 : 0)
           ),
         }}
       />
