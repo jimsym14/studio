@@ -32,7 +32,8 @@ export default function Home() {
         <div
           className="absolute left-1/2 top-24 h-[520px] w-[520px] -translate-x-1/2 rounded-full blur-[140px]"
           style={{
-            background: 'radial-gradient(circle, hsl(var(--hero-glow-soft) / 0.85), hsl(var(--hero-glow-strong) / 0.05) 68%)',
+            background:
+              'radial-gradient(circle, hsl(var(--primary) / 0.55) 0%, hsl(var(--hero-glow-soft) / 0.9) 45%, hsl(var(--hero-glow-strong) / 0.08) 75%)',
           }}
         />
         <div className="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-background via-background/70 to-transparent" />

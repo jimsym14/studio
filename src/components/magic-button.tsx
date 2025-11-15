@@ -63,26 +63,29 @@ export function MagicButton({
       style={{
         perspective: '1000px',
         transformStyle: 'preserve-3d',
+        background: 'linear-gradient(140deg, hsl(var(--primary) / 0.95), hsl(var(--primary) / 0.75) 60%, hsl(var(--primary) / 0.6) 100%)',
+        backdropFilter: 'blur(18px)',
+        WebkitBackdropFilter: 'blur(18px)',
       }}
       className={cn(
-        'relative h-20 rounded-2xl border border-primary/60 bg-[hsl(var(--primary))] p-4 font-moms text-lg uppercase text-[hsl(var(--button-contrast-light))] shadow-[0_25px_45px_rgba(0,0,0,0.25)] backdrop-blur-md transition-all duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 focus-visible:ring-offset-2 focus-visible:ring-offset-background dark:text-[hsl(var(--button-contrast-dark))]',
+        'relative h-20 overflow-hidden rounded-[26px] border border-white/35 p-4 font-moms text-lg uppercase tracking-[0.25em] text-[hsl(var(--button-contrast-light))] shadow-[0_40px_70px_rgba(244,131,45,0.45)] transition-all duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 focus-visible:ring-offset-2 focus-visible:ring-offset-background dark:border-primary/30 dark:text-[hsl(var(--button-contrast-dark))]',
         className
       )}
     >
       {/* Shine Effect */}
       <motion.div
-        className="absolute inset-0 z-20 rounded-2xl mix-blend-screen"
+        className="absolute inset-0 z-20 rounded-2xl opacity-90 mix-blend-screen"
         style={{
           background: useTransform(
             [shineMouseX, shineMouseY],
             ([x, y]) =>
               x !== -1
-                ? `radial-gradient(circle at ${x}px ${y}px, rgba(255,255,255,0.95) 0%, rgba(255,255,255,0.2) 35%, transparent 60%)`
+                ? `radial-gradient(circle at ${x}px ${y}px, rgba(255,255,255,0.98) 0%, rgba(255,255,255,0.35) 30%, transparent 65%)`
                 : 'transparent'
           ),
           opacity: useTransform(
             [shineMouseX, shineMouseY],
-            ([x, y]) => (x !== -1 ? 0.9 : 0)
+            ([x, y]) => (x !== -1 ? 1 : 0)
           ),
         }}
       />
