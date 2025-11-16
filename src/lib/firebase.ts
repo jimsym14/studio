@@ -4,8 +4,8 @@ import { initializeApp, getApps, getApp, type FirebaseOptions } from 'firebase/a
 import { connectAuthEmulator, getAuth } from 'firebase/auth';
 import { connectFirestoreEmulator, getFirestore } from 'firebase/firestore';
 
-const cleanEnvValue = (value?: string): string =>
-  value?.trim().replace(/^['"`]+/, '').replace(/[,'"`]+$/, '') ?? '';
+function cleanEnvValue(value?: string): string | undefined {
+  if (!value) return undefined;
 
   let normalized = value.trim();
 
@@ -21,7 +21,7 @@ const cleanEnvValue = (value?: string): string =>
     .replace(/\s+/g, '');
 
   return normalized || undefined;
-};
+}
 
 const firebaseConfig: FirebaseOptions = {
   apiKey: cleanEnvValue(process.env.NEXT_PUBLIC_FIREBASE_API_KEY),
