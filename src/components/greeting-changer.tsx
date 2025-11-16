@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const greetings = [
@@ -57,21 +57,21 @@ export default function GreetingChanger() {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [currentGreeting, setCurrentGreeting] = useState(greetings[0]);
 
+  const changeGreeting = useCallback(() => {
+    setCurrentIndex((prevIndex) => {
+      const newIndex = (prevIndex + 1) % greetings.length;
+      setCurrentGreeting(greetings[newIndex]);
+      return newIndex;
+    });
+  }, []);
+
   useEffect(() => {
     const interval = setInterval(() => {
       changeGreeting();
     }, 10000);
 
     return () => clearInterval(interval);
-  }, []);
-
-  const changeGreeting = () => {
-    setCurrentIndex((prevIndex) => {
-      const newIndex = (prevIndex + 1) % greetings.length;
-      setCurrentGreeting(greetings[newIndex]);
-      return newIndex;
-    });
-  };
+  }, [changeGreeting]);
 
   return (
     <div className="mt-4">

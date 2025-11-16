@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import './globals.css';
 import { Providers } from '@/components/providers';
 import { Toaster } from '@/components/ui/toaster';
+import { AuthGate } from '@/components/auth-gate';
 
 export const metadata: Metadata = {
   title: 'WordMates',
@@ -25,7 +26,7 @@ export default function RootLayout({
       </head>
       <body className="font-body antialiased">
         <Providers>
-          {children}
+          <AuthGate>{children}</AuthGate>
           <Toaster />
         </Providers>
       </body>

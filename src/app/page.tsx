@@ -10,10 +10,15 @@ import { LanguageToggle } from '@/components/language-toggle';
 import { SettingsModal } from '@/components/settings-modal';
 import GreetingChanger from '@/components/greeting-changer';
 import { Separator } from '@/components/ui/separator';
+import { useIsMobile } from '@/hooks/use-mobile';
+import { UserMenu } from '@/components/user-menu';
+import { useFirebase } from '@/components/firebase-provider';
+import { isGuestProfile } from '@/types/user';
 
 type GameType = 'solo' | 'multiplayer';
 
 export default function Home() {
+  const { profile, user } = useFirebase();
   const [modalState, setModalState] = useState<{
     isOpen: boolean;
     gameType: GameType | null;
@@ -21,6 +26,11 @@ export default function Home() {
 
   const [activeMode, setActiveMode] = useState<GameType>('solo');
   const [playersOnline, setPlayersOnline] = useState(2600);
+  const isMobile = useIsMobile();
+  const guest = profile ? isGuestProfile(profile) : false;
+  const signedIn = Boolean(user);
+  const statusLabel = signedIn ? (guest ? 'Guest mode' : 'Signed in') : 'Not signed in';
+  const displayName = profile?.username ?? user?.displayName ?? (signedIn ? 'Player' : 'WordMates');
 
   const modeConfig: Record<
     GameType,
@@ -35,7 +45,7 @@ export default function Home() {
     }
   > = {
     solo: {
-      title: 'Solo Sprint',
+      title: 'Solo',
       subtitle: 'Daily calm grind',
       description:
         'Dial in your Wordle grind with selectable word sizes, personal speed runs, and leaderboard climbs every time you clutch a solve.',
@@ -45,7 +55,7 @@ export default function Home() {
       perks: ['Custom word sizes', 'Timed mode', 'Leaderboard ready'],
     },
     multiplayer: {
-      title: 'Squad Clash',
+      title: 'Multiplayer',
       subtitle: 'Party-ready chaos',
       description:
         'Jump into co-op boards or PvP bouts with customizable turn timers, match clocks, and word sizes that keep every round wild.',
@@ -99,8 +109,61 @@ export default function Home() {
 
   const activeDetails = modeConfig[activeMode];
 
+  const modesList = (
+    <div className="flex flex-col gap-4 sm:gap-5">
+      {(Object.entries(modeConfig) as [GameType, (typeof modeConfig)['solo']][]).map(([type, config]) => {
+        const Icon = config.icon;
+        const isActive = activeMode === type;
+        const isVisuallyActive = isMobile || isActive;
+        return (
+          <motion.button
+            key={type}
+            type="button"
+            onClick={() => handleOpenModal(type)}
+            onMouseEnter={() => setActiveMode(type)}
+            onFocus={() => setActiveMode(type)}
+            aria-pressed={isActive}
+            style={{ background: isVisuallyActive ? config.gradient : undefined }}
+            className={`mode-card group relative w-full overflow-hidden rounded-[28px] border p-5 text-left transition duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-background ${
+              isVisuallyActive
+                ? 'border-white/70 text-white shadow-[0_30px_90px_rgba(0,0,0,0.25)]'
+                : 'neu-card text-foreground dark:bg-card/70 dark:text-foreground/90'
+            }`}
+          >
+            <div className="flex items-center justify-between gap-4">
+              <span className="rounded-full bg-white/70 px-3 py-1 text-xs font-semibold uppercase tracking-[0.3em] text-foreground/80 dark:bg-black/20 dark:text-white/80">
+                {config.subtitle}
+              </span>
+            </div>
+            <h3 className="mt-4 flex items-center gap-3 text-2xl font-black uppercase tracking-[0.25em]">
+              <Icon className="h-6 w-6" />
+              {config.title}
+            </h3>
+            <div
+              className={`play-pill mt-4 flex items-center justify-between rounded-full border px-4 py-2 text-sm font-semibold uppercase tracking-[0.3em] ${
+                isVisuallyActive
+                  ? 'border-white/70 bg-white/10 text-white'
+                  : 'border-foreground/15 bg-white/70 text-foreground/80 dark:border-foreground/30 dark:bg-foreground/10'
+              }`}
+            >
+              <span className="relative z-10">Play now</span>
+              <motion.span
+                className={`relative z-10 inline-flex h-8 w-8 items-center justify-center rounded-full ${
+                  isActive ? 'bg-white/20 text-white' : 'bg-foreground/5 text-foreground'
+                }`}
+                animate={{ x: isActive ? 6 : 0 }}
+              >
+                →
+              </motion.span>
+            </div>
+          </motion.button>
+        );
+      })}
+    </div>
+  );
+
   return (
-    <div className="relative flex min-h-screen flex-col items-center justify-start overflow-hidden px-4 pt-10 pb-12 sm:px-6">
+    <div className="relative flex min-h-screen flex-col items-center justify-start overflow-hidden px-4 pt-10 pb-12 sm:px-6 sm:pt-12">
       <div className="pointer-events-none absolute inset-0 -z-10">
         <div
           className="absolute left-1/2 top-24 h-[520px] w-[520px] -translate-x-1/2 rounded-full blur-[140px]"
@@ -112,12 +175,6 @@ export default function Home() {
         <div className="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-background via-background/70 to-transparent" />
       </div>
 
-      <div className="absolute top-4 right-4 z-20 flex items-center gap-3 rounded-full border border-border/60 bg-card/70 px-4 py-2 shadow-lg backdrop-blur">
-        <LanguageToggle />
-        <span className="h-4 w-px bg-border/70" />
-        <ThemeToggle />
-      </div>
-
       <div className="z-10 text-center">
         <Logo />
       </div>
@@ -126,31 +183,54 @@ export default function Home() {
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{ duration: 0.35 }}
-        className="relative z-10 mt-10 w-full max-w-4xl overflow-hidden rounded-[36px] border border-[hsl(var(--hero-border))] bg-card/80 p-8 shadow-[0_40px_140px_rgba(0,0,0,0.25)] backdrop-blur-xl sm:p-10"
+        className="neu-shell relative z-10 mt-8 w-full max-w-4xl overflow-hidden rounded-[32px] p-5 backdrop-blur-xl sm:mt-10 sm:rounded-[36px] sm:p-10"
       >
         <div className="pointer-events-none absolute inset-0 rounded-[36px] border border-white/5" />
         <div className="pointer-events-none absolute -right-16 top-8 h-64 w-64 rounded-full blur-[140px] opacity-70" style={{ background: activeDetails.gradient }} />
 
-        <div className="relative grid gap-10 lg:grid-cols-[1.2fr_1fr]">
+        <div className="relative z-10 mb-6 w-full lg:hidden">
+          <GreetingChanger />
+        </div>
+
+        <div className="relative z-10 mb-1 w-full sm:mb-1">
+          <div className="flex w-full items-center gap-3 rounded-[28px] border border-white/15 bg-black/25 px-4 py-3 text-sm shadow-[inset_0_1px_0_rgba(255,255,255,0.1)] backdrop-blur-xl sm:gap-5">
+            <div className="flex flex-1 items-center gap-3">
+              <UserMenu variant="icon" className="h-11 w-11 shrink-0" />
+              <div className="min-w-0">
+                <p className="text-[0.55rem] uppercase tracking-[0.4em] text-white/60">{statusLabel}</p>
+                <p className="truncate text-base font-semibold text-white sm:text-lg" title={displayName}>
+                  {displayName}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 sm:gap-3">
+              <LanguageToggle variant="icon" className="h-10 w-10 border-white/25 bg-transparent text-white" />
+              <ThemeToggle className="h-10 w-10 rounded-full border border-white/25 bg-transparent text-white" />
+            </div>
+          </div>
+        </div>
+
+        <div className="relative grid gap-8 lg:grid-cols-[1.2fr_1fr] lg:gap-10">
           <div className="space-y-8">
-            <div className="text-left">
+            <div className="hidden text-left lg:block">
               <GreetingChanger />
-              <p className="mt-4 text-base text-muted-foreground sm:text-lg">
-                {activeDetails.description}
-              </p>
+            </div>
+            <div className="lg:hidden rounded-[32px] neu-card p-4">
+              <p className="text-center text-xs font-semibold uppercase tracking-[0.5em] text-muted-foreground">Modes</p>
+              <div className="mt-4">{modesList}</div>
             </div>
             <Separator className="border-border/70" />
-            <div className="grid gap-4 rounded-3xl border border-border/60 bg-background/70 p-4 sm:grid-cols-2">
+            <div className="grid gap-4 rounded-3xl neu-card p-4 sm:grid-cols-2">
               {heroStats.map((stat) => (
-                <div key={stat.label} className="rounded-2xl bg-card/70 p-4 shadow-inner">
+                <div key={stat.label} className="rounded-2xl neu-card sunset-card p-4">
                   <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">{stat.label}</p>
                   <p className="mt-2 text-2xl font-black tracking-tight">{stat.value}</p>
                 </div>
               ))}
             </div>
-            <div className="grid gap-4 rounded-3xl border border-border/60 bg-background/70 p-4 sm:grid-cols-2">
+            <div className="grid gap-4 rounded-3xl neu-card p-4 sm:grid-cols-2">
               {topFinders.map((finder) => (
-                <div key={finder.label} className="rounded-2xl bg-card/80 p-4 shadow-inner">
+                <div key={finder.label} className="rounded-2xl neu-card sunset-card p-4">
                   <p className="flex items-center gap-2 text-xs uppercase tracking-[0.3em] text-muted-foreground">
                     <Crown className="h-4 w-4 text-amber-400" />
                     {finder.label}
@@ -160,69 +240,11 @@ export default function Home() {
                 </div>
               ))}
             </div>
-            <div className="rounded-3xl border border-border/60 bg-card/70 p-4">
-              <p className="text-xs font-semibold uppercase tracking-[0.35em] text-primary">{activeDetails.title}</p>
-              <p className="mt-2 text-sm text-muted-foreground">{activeDetails.vibe}</p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                {activeDetails.perks.map((perk) => (
-                  <span key={perk} className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em]">
-                    {perk}
-                  </span>
-                ))}
-              </div>
-            </div>
           </div>
 
-          <div className="space-y-5">
+          <div className="hidden space-y-5 lg:block">
             <p className="text-center text-xs font-semibold uppercase tracking-[0.5em] text-muted-foreground">Modes</p>
-            <div className="flex flex-col gap-5">
-              {(Object.entries(modeConfig) as [GameType, (typeof modeConfig)['solo']][]).map(([type, config]) => {
-                const Icon = config.icon;
-                const isActive = activeMode === type;
-                return (
-                  <motion.button
-                    key={type}
-                    type="button"
-                    onClick={() => handleOpenModal(type)}
-                    onMouseEnter={() => setActiveMode(type)}
-                    onFocus={() => setActiveMode(type)}
-                    aria-pressed={isActive}
-                    style={{ background: isActive ? config.gradient : undefined }}
-                    className={`group relative w-full overflow-hidden rounded-[28px] border border-white/10 p-5 text-left transition duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-background ${
-                      isActive ? 'text-white shadow-lg' : 'bg-card/70'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-4">
-                      <span className="rounded-full bg-black/20 px-3 py-1 text-xs font-semibold uppercase tracking-[0.3em]">
-                        {config.subtitle}
-                      </span>
-                      <Icon className="h-6 w-6" />
-                    </div>
-                    <h3 className="mt-4 text-2xl font-black uppercase tracking-[0.25em]">{config.title}</h3>
-                    <p
-                      className={`mt-2 text-sm leading-snug ${isActive ? 'text-white/80' : 'text-foreground/70'}`}
-                    >
-                      {config.description}
-                    </p>
-                    <div
-                      className={`mt-4 flex items-center justify-between text-sm font-semibold uppercase tracking-[0.3em] ${
-                        isActive ? 'text-white' : 'text-foreground/80'
-                      }`}
-                    >
-                      <span>Play now</span>
-                      <motion.span
-                        className={`inline-flex h-8 w-8 items-center justify-center rounded-full ${
-                          isActive ? 'bg-white/20 text-white' : 'bg-foreground/10 text-foreground'
-                        }`}
-                        animate={{ x: isActive ? 6 : 0 }}
-                      >
-                        →
-                      </motion.span>
-                    </div>
-                  </motion.button>
-                );
-              })}
-            </div>
+            {modesList}
           </div>
         </div>
       </motion.section>
