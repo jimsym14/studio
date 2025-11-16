@@ -4,8 +4,24 @@ import { initializeApp, getApps, getApp, type FirebaseOptions } from 'firebase/a
 import { connectAuthEmulator, getAuth } from 'firebase/auth';
 import { connectFirestoreEmulator, getFirestore } from 'firebase/firestore';
 
-const cleanEnvValue = (value?: string) =>
-  value?.trim().replace(/^['"`]+/, '').replace(/[,'"`]+$/, '');
+const cleanEnvValue = (value?: string): string =>
+  value?.trim().replace(/^['"`]+/, '').replace(/[,'"`]+$/, '') ?? '';
+
+  let normalized = value.trim();
+
+  try {
+    normalized = decodeURIComponent(normalized);
+  } catch {
+    // Ignore decoding issues; fall back to raw string.
+  }
+
+  normalized = normalized
+    .replace(/^['"`]+/, '')
+    .replace(/[,'"`]+$/, '')
+    .replace(/\s+/g, '');
+
+  return normalized || undefined;
+};
 
 const firebaseConfig: FirebaseOptions = {
   apiKey: cleanEnvValue(process.env.NEXT_PUBLIC_FIREBASE_API_KEY),

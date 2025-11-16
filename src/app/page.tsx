@@ -20,7 +20,7 @@ export default function Home() {
   }>({ isOpen: false, gameType: null });
 
   const [activeMode, setActiveMode] = useState<GameType>('solo');
-  const [playersOnline, setPlayersOnline] = useState(() => 2200 + Math.floor(Math.random() * 400));
+  const [playersOnline, setPlayersOnline] = useState(2600);
 
   const modeConfig: Record<
     GameType,
@@ -57,14 +57,23 @@ export default function Home() {
   };
 
   useEffect(() => {
-    const interval = setInterval(() => {
+    const clamp = (value: number) => Math.min(4200, Math.max(1500, value));
+
+    const seedTimeout = window.setTimeout(() => {
+      setPlayersOnline(clamp(2200 + Math.floor(Math.random() * 400)));
+    }, 0);
+
+    const interval = window.setInterval(() => {
       setPlayersOnline((prev) => {
         const delta = Math.floor(Math.random() * 60) - 30;
-        const next = prev + delta;
-        return Math.min(4200, Math.max(1500, next));
+        return clamp(prev + delta);
       });
     }, 4500);
-    return () => clearInterval(interval);
+
+    return () => {
+      window.clearTimeout(seedTimeout);
+      window.clearInterval(interval);
+    };
   }, []);
 
   const heroStats = useMemo(
