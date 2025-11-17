@@ -56,7 +56,7 @@ export default function Home() {
     },
     multiplayer: {
       title: 'Multiplayer',
-      subtitle: 'Party-ready chaos',
+      subtitle: 'PvP & Co-op',
       description:
         'Jump into co-op boards or PvP bouts with customizable turn timers, match clocks, and word sizes that keep every round wild.',
       vibe: 'Arcade energy + team hype',

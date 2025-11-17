@@ -10,6 +10,8 @@ export interface GameDocument {
   status: GameStatus;
   players: string[];
   activePlayers: string[];
+  turnOrder?: string[];
+  currentTurnPlayerId?: string | null;
   wordLength: number;
   solution: string;
   maxAttempts: number;

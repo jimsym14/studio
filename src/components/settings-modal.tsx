@@ -63,7 +63,7 @@ export function SettingsModal({ isOpen, gameType, onClose }: SettingsModalProps)
   const router = useRouter();
   const { toast } = useToast();
   const { theme } = useTheme();
-  const { userId } = useFirebase();
+  const { userId, user } = useFirebase();
   const [multiplayerMode, setMultiplayerMode] = useState<'pvp' | 'co-op'>('pvp');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [hoveredButton, setHoveredButton] = useState<string | null>(null);
@@ -104,8 +104,12 @@ export function SettingsModal({ isOpen, gameType, onClose }: SettingsModalProps)
         multiplayerMode: gameType === 'multiplayer' ? multiplayerMode : null,
         creatorId: userId,
       };
-      
-      const gameId = await createGame(gameSettings, firebaseConfig);
+      const authToken = await user?.getIdToken?.();
+      if (!authToken) {
+        throw new Error('Unable to fetch auth token.');
+      }
+
+      const gameId = await createGame(gameSettings, firebaseConfig, authToken);
       
       if (gameId) {
         router.push(gameType === 'multiplayer' ? `/lobby/${gameId}` : `/game/${gameId}`);

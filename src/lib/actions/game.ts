@@ -1,7 +1,7 @@
 'use server';
 
-import { getApp, getApps, initializeApp, type FirebaseOptions } from 'firebase/app';
-import { doc, setDoc, getFirestore } from 'firebase/firestore';
+import type { FirebaseOptions } from 'firebase/app';
+import { adminAuth, adminDb } from '@/lib/firebase-admin';
 import { getRandomWord, normalizeWord } from '@/lib/words.server';
 
 // A simple random ID generator
@@ -30,23 +30,97 @@ function addMinutes(baseIso: string, minutes: number | null): string | null {
   return new Date(base.getTime() + minutes * 60 * 1000).toISOString();
 }
 
-export async function createGame(settings: any, firebaseConfig: FirebaseOptions) {
+const shouldUseEmulators = process.env.NEXT_PUBLIC_FIREBASE_USE_EMULATORS === 'true';
+
+const requiredFirebaseKeys: Array<keyof FirebaseOptions> = [
+  'apiKey',
+  'authDomain',
+  'projectId',
+  'storageBucket',
+  'messagingSenderId',
+  'appId',
+];
+
+const cleanEnvValue = (value?: string): string | undefined => {
+  if (!value) return undefined;
+  let normalized = value.trim();
+  try {
+    normalized = decodeURIComponent(normalized);
+  } catch {
+    // ignore decode errors
+  }
+  normalized = normalized
+    .replace(/^['"`]+/, '')
+    .replace(/['"`]+$/, '')
+    .replace(/\s+/g, '');
+  return normalized || undefined;
+};
+
+const resolveFirebaseConfig = (incoming: FirebaseOptions): FirebaseOptions => {
+  const fallbackEnv = {
+    apiKey: cleanEnvValue(process.env.NEXT_PUBLIC_FIREBASE_API_KEY),
+    authDomain: cleanEnvValue(process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN),
+    projectId: cleanEnvValue(process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID),
+    storageBucket: cleanEnvValue(process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET),
+    messagingSenderId: cleanEnvValue(process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID),
+    appId: cleanEnvValue(process.env.NEXT_PUBLIC_FIREBASE_APP_ID),
+  } satisfies FirebaseOptions;
+
+  const resolvedConfig: FirebaseOptions = {
+    ...fallbackEnv,
+    ...incoming,
+  };
+
+  const missingKeys = requiredFirebaseKeys.filter((key) => !resolvedConfig[key]);
+  if (missingKeys.length) {
+    throw new Error(`Firebase config is missing: ${missingKeys.join(', ')}`);
+  }
+
+  return resolvedConfig;
+};
+
+export async function createGame(
+  settings: any,
+  firebaseConfig: FirebaseOptions,
+  authToken?: string
+) {
   const { creatorId, ...gameSettings } = settings;
 
   if (!creatorId) {
     throw new Error("Creator ID is missing. The client must provide the user's UID.");
   }
   
-  if (!firebaseConfig.apiKey) {
+  if (!firebaseConfig?.apiKey) {
     throw new Error('Firebase config is missing.');
   }
 
   try {
-    const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
-    const db = getFirestore(app);
+    const resolvedConfig = resolveFirebaseConfig(firebaseConfig);
+    if (!process.env.FIREBASE_ADMIN_PROJECT_ID && resolvedConfig.projectId) {
+      process.env.FIREBASE_ADMIN_PROJECT_ID = resolvedConfig.projectId;
+    }
+
+    let verifiedUid: string | null = null;
+    if (authToken) {
+      try {
+        const decoded = await adminAuth.verifyIdToken(authToken);
+        verifiedUid = decoded.uid;
+      } catch (authError) {
+        if (!shouldUseEmulators) {
+          throw new Error('Failed to verify auth token.');
+        }
+      }
+    }
+
+    if (!verifiedUid && !shouldUseEmulators) {
+      throw new Error('Auth token required to create a game.');
+    }
+
+    if (verifiedUid && verifiedUid !== creatorId) {
+      throw new Error('Creator ID mismatch with authenticated user.');
+    }
 
     const gameId = generateGameId();
-    const gameRef = doc(db, 'games', gameId);
 
     const wordLength = typeof gameSettings.wordLength === 'number' ? gameSettings.wordLength : 5;
     const normalizedLength = Math.max(4, Math.min(6, wordLength));
@@ -66,6 +140,8 @@ export async function createGame(settings: any, firebaseConfig: FirebaseOptions)
       status: initialStatus,
       players: [creatorId],
       activePlayers: [creatorId],
+      turnOrder: [],
+      currentTurnPlayerId: null,
       createdAt,
       solution,
       maxAttempts,
@@ -82,7 +158,7 @@ export async function createGame(settings: any, firebaseConfig: FirebaseOptions)
       completedAt: null,
     };
 
-    await setDoc(gameRef, initialGameData);
+    await adminDb.collection('games').doc(gameId).set(initialGameData);
 
     return gameId;
   } catch (error) {

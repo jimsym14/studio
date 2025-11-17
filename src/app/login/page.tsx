@@ -54,9 +54,9 @@ type TabKey = 'signin' | 'signup' | 'guest';
 
 const COPY = {
   tabs: {
-    signin: 'Sign in',
+    signin: 'Log in',
     signup: 'Register',
-    guest: 'Guest mode',
+    guest: 'Guest',
   },
   labels: {
     identifier: 'Username or email',
@@ -186,6 +186,10 @@ export default function LoginPage() {
   const copy = COPY;
   const tabOrder: TabKey[] = ['signin', 'signup', 'guest'];
   const activeIndex = tabOrder.indexOf(activeTab);
+  const safeActiveIndex = Math.max(activeIndex, 0);
+  const tabSlotWidth = 100 / tabOrder.length;
+  const indicatorWidth = `calc(${tabSlotWidth}% - 0.5rem)`;
+  const indicatorOffset = `calc(${safeActiveIndex * tabSlotWidth}% + 0.25rem)`;
 
   const usernameForm = useForm<UsernameValues>({
     resolver: zodResolver(usernameSchema),
@@ -403,7 +407,7 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-gradient-to-b from-[#1a0800] via-[#050301] to-[#120400] text-white">
+    <div className="relative min-h-screen overflow-hidden bg-gradient-to-b from-[#1a0800] via-[#050301] to-[#120400] text-white font-moms">
       <OrangePulseBackdrop />
       <div className="relative z-10 mx-auto flex min-h-screen max-w-5xl flex-col items-center justify-start gap-12 px-4 pb-12 pt-16">
         <motion.div
@@ -413,7 +417,14 @@ export default function LoginPage() {
           className="flex w-full flex-col items-center gap-6 text-center"
         >
           <div className="relative h-24 w-72 sm:h-28 sm:w-80">
-            <Image src="/logo.png" alt="WordMates" fill priority className="object-contain" />
+            <Image
+              src="/logo.png"
+              alt="WordMates"
+              fill
+              priority
+              sizes="(max-width: 640px) 70vw, 320px"
+              className="object-contain"
+            />
           </div>
         </motion.div>
 
@@ -433,8 +444,9 @@ export default function LoginPage() {
               <TabsList className="relative grid w-full grid-cols-3 gap-0 rounded-full border border-[#ff945a]/40 bg-gradient-to-r from-[#3b1c0f] via-[#1c0d06] to-[#3b1c0f] p-1 text-sm font-semibold uppercase tracking-wide shadow-[inset_0_6px_18px_rgba(0,0,0,0.45)]">
                 <motion.div
                   aria-hidden
-                  className="pointer-events-none absolute inset-y-1 w-1/3 rounded-full border border-white/15 bg-gradient-to-r from-[#ff7a1a] via-[#ff5300] to-[#1b0902] shadow-[0_18px_40px_rgba(0,0,0,0.55)]"
-                  animate={{ left: `${Math.max(activeIndex, 0) * (100 / tabOrder.length)}%` }}
+                  className="pointer-events-none absolute inset-y-1 rounded-full border border-white/15 bg-gradient-to-r from-[#ff7a1a] via-[#ff5300] to-[#1b0902] shadow-[0_18px_40px_rgba(0,0,0,0.55)]"
+                  style={{ width: indicatorWidth }}
+                  animate={{ left: indicatorOffset }}
                   initial={false}
                   transition={{ type: 'spring', stiffness: 320, damping: 30 }}
                 />
@@ -542,7 +554,6 @@ export default function LoginPage() {
                                   {...field}
                                   autoComplete="username"
                                   className="rounded-2xl border border-white/20 bg-white/10 px-4 py-5 text-base text-white placeholder:text-white/40"
-                                  placeholder="mystic"
                                 />
                               </FormControl>
                               {copy.helper.username && <p className="text-xs text-white/60">{copy.helper.username}</p>}
@@ -668,7 +679,7 @@ export default function LoginPage() {
                         {guestLoading ? (
                           <span className="flex items-center justify-center">
                             <Loader2 className="mr-2 h-5 w-5 animate-spin text-slate-900" />
-                            Loading vibe…
+                            Loading…
                           </span>
                         ) : (
                           copy.buttons.guest
@@ -686,7 +697,7 @@ export default function LoginPage() {
       </div>
 
       <Dialog open={usernameDialogOpen} onOpenChange={(open) => (open ? setUsernameDialogOpen(true) : resetUsernameDialog())}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="font-moms sm:max-w-md">
           <DialogHeader>
             <DialogTitle>{copy.dialog.title}</DialogTitle>
             <DialogDescription>{copy.dialog.description}</DialogDescription>

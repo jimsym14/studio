@@ -33,6 +33,7 @@ import { Button } from '@/components/ui/button';
 import { useFirebase } from '@/components/firebase-provider';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { GraffitiBackground } from '@/components/graffiti-background';
+import { usePlayerNames } from '@/hooks/use-player-names';
 import { useToast } from '@/hooks/use-toast';
 import { createGame } from '@/lib/actions/game';
 import type { GameDocument } from '@/types/game';
@@ -61,6 +62,15 @@ type ConfettiPiece = {
   rotation: number;
 };
 type DebugResultVariant = 'playerWin' | 'playerLoss' | 'rivalWin' | 'noWinner' | null;
+
+const getNextTurnPlayerId = (order: string[], current: string | null): string | null => {
+  if (!order.length) return null;
+  const currentIndex = current ? order.indexOf(current) : -1;
+  if (currentIndex === -1) {
+    return order[0];
+  }
+  return order[(currentIndex + 1) % order.length];
+};
 
 const matchMinutesFromSetting = (value?: string) => {
   if (!value || value === 'unlimited') return null;
@@ -148,7 +158,7 @@ const getRandomSoloLossMessage = () => {
 export default function GamePage() {
   const params = useParams();
   const router = useRouter();
-  const { db, userId } = useFirebase();
+  const { db, userId, user } = useFirebase();
   const { toast } = useToast();
 
   const [game, setGame] = useState<GameDocument | null>(null);
@@ -194,6 +204,45 @@ export default function GamePage() {
     if (gameId.length <= 4) return gameId.toUpperCase();
     return `${gameId.slice(0, 4).toUpperCase()}…`;
   }, [gameId]);
+  const turnOrder = game?.turnOrder?.length ? game.turnOrder : game?.players ?? [];
+  const isMultiplayerGame = game?.gameType === 'multiplayer' && turnOrder.length > 0;
+  const activeTurnPlayerId = isMultiplayerGame ? game?.currentTurnPlayerId ?? null : null;
+  const hasLockedTurn = Boolean(isMultiplayerGame && activeTurnPlayerId);
+  const isMyTurn = !isMultiplayerGame || !hasLockedTurn || activeTurnPlayerId === userId;
+  const canInteract = Boolean(isPlayer && game?.status === 'in_progress' && isMyTurn);
+  const isCoopMode = game?.multiplayerMode === 'co-op';
+  const spectatorIds = useMemo(() => {
+    if (!game) return [];
+    const active = Array.from(new Set(game.activePlayers ?? []));
+    return active.filter((id) => !game.players.includes(id));
+  }, [game]);
+  const trackedPlayerIds = useMemo(() => {
+    if (!game) return [];
+    const ids = new Set<string>();
+    (game.players ?? []).forEach((id) => id && ids.add(id));
+    (game.activePlayers ?? []).forEach((id) => id && ids.add(id));
+    (game.turnOrder ?? []).forEach((id) => id && ids.add(id));
+    spectatorIds.forEach((id) => id && ids.add(id));
+    if (game.currentTurnPlayerId) ids.add(game.currentTurnPlayerId);
+    if (game.winnerId) ids.add(game.winnerId);
+    if (game.endedBy) ids.add(game.endedBy);
+    return Array.from(ids);
+  }, [game, spectatorIds]);
+  const { getPlayerName } = usePlayerNames({ db, playerIds: trackedPlayerIds });
+  const formatPlayerLabel = (playerId?: string | null, fallbackPrefix = 'Player') => {
+    if (!playerId) return '—';
+    if (playerId === userId) return 'You';
+    const resolved = getPlayerName(playerId);
+    if (resolved) return resolved;
+    return `${fallbackPrefix} ${playerId.slice(-4).toUpperCase()}`;
+  };
+  const turnStatusCopy = (() => {
+    if (!isMultiplayerGame) return null;
+    if (!hasLockedTurn) return 'Περιμένουμε να ξεκινήσει ο γύρος.';
+    return activeTurnPlayerId === userId
+      ? 'Η σειρά σου!'
+      : `Σειρά: ${formatPlayerLabel(activeTurnPlayerId)}`;
+  })();
 
   useEffect(() => {
     if (!keyPulse) return undefined;
@@ -254,6 +303,13 @@ export default function GamePage() {
     if (!game) return;
     setCurrentGuess((prev) => prev.slice(0, game.wordLength));
   }, [game]);
+
+  useEffect(() => {
+    if (!isPlayer) return;
+    if (!isMyTurn) {
+      setCurrentGuess('');
+    }
+  }, [isMyTurn, isPlayer]);
 
   useEffect(() => {
     if (!db || !gameId) return;
@@ -439,7 +495,7 @@ export default function GamePage() {
 
   const addLetter = useCallback(
     (letter: string) => {
-      if (!game || !isPlayer) return;
+      if (!game || !isPlayer || !isMyTurn || game.status !== 'in_progress') return;
       if (currentGuess.length >= game.wordLength) return;
       const normalized = letter.toLowerCase();
       const nextGuess = (currentGuess + normalized).slice(0, game.wordLength);
@@ -448,12 +504,13 @@ export default function GamePage() {
       setTilePulse({ index: currentGuess.length, id: pulseId });
       setCurrentGuess(nextGuess);
     },
-    [currentGuess, game, isPlayer]
+    [currentGuess, game, isMyTurn, isPlayer]
   );
 
   const removeLetter = useCallback(() => {
+    if (!canInteract) return;
     setCurrentGuess((prev) => prev.slice(0, -1));
-  }, []);
+  }, [canInteract]);
 
   const buildLossMessage = useCallback(
     (reason: string) => {
@@ -503,6 +560,10 @@ export default function GamePage() {
 
   const handleSubmit = useCallback(async () => {
     if (!db || !game || !gameId || !userId || !isPlayer || isSubmitting) return;
+    if (!isMyTurn && game.gameType === 'multiplayer') {
+      toast({ variant: 'destructive', title: 'Βάλε παύση', description: 'Περίμενε τη σειρά σου για να παίξεις.' });
+      return;
+    }
     const guess = currentGuess.trim().toLowerCase();
     if (guess.length !== game.wordLength) {
       toast({ variant: 'destructive', title: 'Too short', description: 'Need more letters.' });
@@ -535,6 +596,11 @@ export default function GamePage() {
       const outOfAttempts = attemptsUsed >= game.maxAttempts;
       const matchMinutes = matchMinutesFromSetting(game.matchTime);
       const turnSeconds = turnSecondsFromSetting(game.turnTime);
+      const order = game.turnOrder?.length ? game.turnOrder : game.players;
+      const shouldRotateTurns = game.gameType === 'multiplayer' && order.length > 1;
+      const nextTurnPlayerId = shouldRotateTurns
+        ? getNextTurnPlayerId(order, game.currentTurnPlayerId ?? userId)
+        : game.currentTurnPlayerId ?? null;
 
       const updatePayload: Record<string, unknown> = {
         guesses: arrayUnion(guessEntry),
@@ -558,16 +624,33 @@ export default function GamePage() {
         updatePayload.completedAt = guessEntry.submittedAt;
         updatePayload.winnerId = isWin ? userId : null;
         updatePayload.completionMessage = isWin
-          ? 'Word cracked! Celebrate the streak.'
+          ? game.gameType === 'multiplayer'
+            ? game.multiplayerMode === 'co-op'
+              ? 'Ομάδα, μπράβο! Βρήκατε τη λέξη.'
+              : 'Νίκη! Έπιασες πρώτος τη λέξη.'
+            : 'Word cracked! Celebrate the streak.'
           : buildLossMessage('No more guesses left.');
         updatePayload.turnDeadline = null;
         updatePayload.matchDeadline = null;
+        updatePayload.currentTurnPlayerId = null;
+      } else if (game.gameType === 'multiplayer') {
+        if (shouldRotateTurns && nextTurnPlayerId) {
+          updatePayload.currentTurnPlayerId = nextTurnPlayerId;
+        } else if (!game.currentTurnPlayerId && order.length) {
+          updatePayload.currentTurnPlayerId = order[0];
+        }
+        if (!game.turnOrder?.length) {
+          updatePayload.turnOrder = order;
+        }
       }
 
       const gameRef = doc(db, 'games', gameId);
       await updateDoc(gameRef, updatePayload);
       if (isWin) {
-        toast({ title: 'Victory!', description: 'You guessed the word.' });
+        toast({
+          title: isCoopMode ? 'Team victory!' : 'Victory!',
+          description: isCoopMode ? 'Η ομάδα σας βρήκε τη λέξη.' : 'You guessed the word.',
+        });
       } else if (outOfAttempts) {
         toast({ title: 'Out of tries', description: `Answer: ${game.solution.toUpperCase()}` });
       }
@@ -586,6 +669,8 @@ export default function GamePage() {
     db,
     game,
     gameId,
+    isCoopMode,
+    isMyTurn,
     isPlayer,
     isSubmitting,
     toast,
@@ -594,7 +679,7 @@ export default function GamePage() {
   ]);
 
   useEffect(() => {
-    if (!game || game.status !== 'in_progress') return;
+    if (!game || game.status !== 'in_progress' || !isPlayer || !isMyTurn) return;
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.metaKey || event.ctrlKey || event.altKey) return;
@@ -617,7 +702,7 @@ export default function GamePage() {
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [game, handleSubmit, removeLetter, addLetter]);
+  }, [addLetter, game, handleSubmit, isMyTurn, isPlayer, removeLetter]);
 
   const handleCopyLobbyLink = useCallback(async () => {
     try {
@@ -668,6 +753,10 @@ export default function GamePage() {
   const handleRematch = useCallback(async () => {
     if (!firebaseConfig || !userId || !game) return;
     try {
+      const authToken = await user?.getIdToken?.();
+      if (!authToken) {
+        throw new Error('Missing auth token');
+      }
       const newGameId = await createGame(
         {
           creatorId: userId,
@@ -677,7 +766,8 @@ export default function GamePage() {
           matchTime: game.matchTime,
           turnTime: game.turnTime ?? 'unlimited',
         },
-        firebaseConfig
+        firebaseConfig,
+        authToken
       );
       if (!newGameId) throw new Error('Failed to create rematch');
       router.push(game.gameType === 'multiplayer' ? `/lobby/${newGameId}` : `/game/${newGameId}`);
@@ -685,7 +775,7 @@ export default function GamePage() {
       console.error('Failed to start rematch', error);
       toast({ variant: 'destructive', title: 'Rematch failed', description: 'Please try again.' });
     }
-  }, [game, router, toast, userId]);
+  }, [game, router, toast, user, userId]);
 
   const clearDebugResult = useCallback(() => {
     setDebugResultVariant(null);
@@ -734,7 +824,8 @@ export default function GamePage() {
       if (
         i === submittedGuesses.length &&
         isPlayer &&
-        game.status === 'in_progress'
+        game.status === 'in_progress' &&
+        isMyTurn
       ) {
         const padded = liveGuess.padEnd(game.wordLength, ' ');
         rows.push({
@@ -752,29 +843,31 @@ export default function GamePage() {
     }
 
     return rows;
-  }, [liveGuess, game, isPlayer]);
+  }, [isMyTurn, liveGuess, game, isPlayer]);
 
   const matchCountdown = formatCountdown(game?.matchDeadline ?? null, now);
   const turnCountdown = formatCountdown(game?.turnDeadline ?? null, now);
-  const spectatorIds = useMemo(() => {
-    if (!game) return [];
-    const active = Array.from(new Set(game.activePlayers ?? []));
-    return active.filter((id) => !game.players.includes(id));
-  }, [game]);
   const submittedGuessCount = game?.guesses?.length ?? 0;
   const isGameComplete = game?.status === 'completed';
-  const actualDidWin = Boolean(isGameComplete && game?.winnerId === userId);
+  const coopTeamWin = Boolean(isGameComplete && isCoopMode && game?.winnerId);
+  const actualDidWin = Boolean(
+    isGameComplete && (game?.winnerId === userId || (coopTeamWin && isPlayer))
+  );
   const actualDidLose = Boolean(isGameComplete && !actualDidWin);
   const solutionWord = (game?.solution ?? 'DEBUG').toUpperCase();
-  const baseResultHeading = !game
-    ? 'Match complete'
-    : game.gameType === 'solo' && isPlayer && game.winnerId !== userId
-      ? 'You lost'
-      : game.winnerId
-        ? game.winnerId === userId
-          ? 'You cracked it!'
-          : 'Rival guessed the word'
-        : 'No winner this round';
+  const baseResultHeading = (() => {
+    if (!game) return 'Match complete';
+    if (isCoopMode && game.winnerId) {
+      return game.winnerId === userId ? 'You cracked it!' : 'Team victory!';
+    }
+    if (game.gameType === 'solo' && isPlayer && game.winnerId !== userId) {
+      return 'You lost';
+    }
+    if (game.winnerId) {
+      return game.winnerId === userId ? 'You cracked it!' : 'Rival guessed the word';
+    }
+    return 'No winner this round';
+  })();
   const debugOverrides = useMemo(() => {
     if (!debugResultVariant) return null;
     switch (debugResultVariant) {
@@ -842,7 +935,7 @@ export default function GamePage() {
       : '!border !border-white/40 !text-white hover:!bg-white/10 dark:!text-white'
   );
   const completionBodyText = debugOverrides?.message
-    ?? (didWin ? 'Word cracked! Celebrate the streak.' : game?.completionMessage ?? 'Thanks for playing.');
+    ?? (game?.completionMessage ?? (didWin ? 'Word cracked! Celebrate the streak.' : 'Thanks for playing.'));
   const debugButtons: Array<{ label: string; variant: Exclude<DebugResultVariant, null> }> = [
     { label: 'Preview Win', variant: 'playerWin' },
     { label: 'Preview Loss', variant: 'playerLoss' },
@@ -927,10 +1020,10 @@ export default function GamePage() {
     matchCountdown ? { label: 'Match', value: matchCountdown } : null,
     turnCountdown ? { label: 'Turn', value: turnCountdown } : null,
   ].filter(Boolean) as Array<{ label: string; value: string }>;
-    const timerIconLookup: Record<'Match' | 'Turn', LucideIcon> = {
-      Match: Timer,
-      Turn: Clock3,
-    };
+  const timerIconLookup: Record<'Match' | 'Turn', LucideIcon> = {
+    Match: Timer,
+    Turn: Clock3,
+  };
 
   return (
     <div className="relative min-h-screen overflow-hidden bg-[hsl(var(--panel-neutral))] text-foreground dark:bg-background">
@@ -1014,6 +1107,12 @@ export default function GamePage() {
                   <Users className="h-4 w-4" />
                   <span className="font-mono text-base text-[hsl(var(--primary-foreground))] dark:text-foreground">{game.players.length}</span>
                 </span>
+                {isMultiplayerGame && (
+                  <span className="inline-flex items-center gap-2 rounded-full border border-transparent bg-[hsl(var(--accent))] px-4 py-2 text-xs font-semibold uppercase tracking-[0.25em] text-[hsl(var(--accent-foreground))] shadow-[0_12px_32px_rgba(16,185,129,0.32)] dark:border-[hsla(var(--accent)/0.45)] dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12] dark:text-muted-foreground dark:shadow-none">
+                    <Clock3 className="h-4 w-4" />
+                    <span>{turnStatusCopy ?? 'Waiting'}</span>
+                  </span>
+                )}
               </div>
               {timerPills.length > 0 && (
                 <div className="flex flex-wrap items-start gap-2 sm:justify-end">
@@ -1100,7 +1199,7 @@ export default function GamePage() {
           <div className="relative mx-auto max-w-xl rounded-[32px] border border-white/40 bg-white/20 p-5 shadow-[0_30px_80px_rgba(0,0,0,0.25)] backdrop-blur-2xl sm:p-6 dark:border-white/10 dark:bg-white/5">
             <div className="pointer-events-none absolute inset-0 rounded-[32px] bg-gradient-to-t from-white/30 via-transparent to-white/5 opacity-80 dark:from-white/5 dark:via-transparent dark:to-white/0" />
             <div className="relative space-y-2.5">
-            {isPlayer && game.status === 'in_progress' && (
+            {isPlayer && game.status === 'in_progress' && canInteract && (
               <div>
                 <div className="flex flex-wrap justify-center gap-2">
                   {currentGuessPreview.split('').map((letter: string, index: number) => (
@@ -1114,6 +1213,11 @@ export default function GamePage() {
                 </div>
                 <div className="mt-4 h-px w-full bg-white/50 dark:bg-white/10" />
               </div>
+            )}
+            {turnStatusCopy && (
+              <p className="text-center text-xs font-semibold uppercase tracking-[0.35em] text-white/80 dark:text-white/60">
+                {turnStatusCopy}
+              </p>
             )}
             <div className="space-y-2.5">
               {keyboardRows.map((row) => (
@@ -1139,10 +1243,10 @@ export default function GamePage() {
                           pulseActive && 'animate-key-pop',
                           feedbackEntry && 'keyboard-feedback',
                           feedbackEntry && `keyboard-feedback-${feedbackEntry.evaluation}`,
-                          (!isPlayer || game.status !== 'in_progress') && 'opacity-60'
+                          (!canInteract) && 'opacity-60'
                         )}
                         onClick={() => addLetter(letter)}
-                        disabled={!isPlayer || game.status !== 'in_progress'}
+                        disabled={!canInteract}
                         aria-label={`Use letter ${letter}`}
                       >
                         <span className="relative z-[1]">{letter}</span>
@@ -1157,6 +1261,7 @@ export default function GamePage() {
                   variant="ghost"
                   className="shrink-0 gap-2 rounded-2xl border border-[hsla(var(--accent)/0.5)] bg-[hsla(var(--accent)/0.15)] px-6 py-2 text-[hsl(var(--accent))] shadow-[0_12px_28px_rgba(0,128,96,0.2)] dark:border-[hsla(var(--accent)/0.4)] dark:bg-white/5 dark:text-[hsl(var(--accent-foreground))]"
                   onClick={() => setCurrentGuess('')}
+                  disabled={!canInteract}
                 >
                   <RotateCcw className="h-4 w-4" /> Reset row
                 </Button>
@@ -1164,7 +1269,7 @@ export default function GamePage() {
                   type="button"
                   className="flex h-10 w-20 items-center justify-center rounded-2xl border border-transparent bg-[hsl(var(--primary))] text-sm font-semibold uppercase text-[hsl(var(--primary-foreground))] shadow-[0_15px_35px_rgba(255,140,0,0.35)] transition-all hover:-translate-y-0.5 sm:h-12 sm:w-24 dark:bg-[hsl(var(--primary))] dark:text-[hsl(var(--primary-foreground))]"
                   onClick={() => void handleSubmit()}
-                  disabled={!isPlayer || isSubmitting || game.status !== 'in_progress'}
+                  disabled={!canInteract || isSubmitting}
                   aria-label="Submit guess"
                 >
                   <CornerDownLeft className="h-5 w-5" aria-hidden="true" />
@@ -1173,7 +1278,7 @@ export default function GamePage() {
                   type="button"
                   className="flex h-10 w-16 items-center justify-center rounded-2xl border border-transparent bg-[hsl(var(--destructive))] text-sm font-semibold uppercase text-[hsl(var(--destructive-foreground))] shadow-[0_12px_30px_rgba(255,0,72,0.3)] transition-all hover:-translate-y-0.5 sm:h-12 sm:w-18 sm:text-sm dark:bg-[hsl(var(--destructive))] dark:text-[hsl(var(--destructive-foreground))]"
                   onClick={removeLetter}
-                  disabled={!isPlayer || isSubmitting || game.status !== 'in_progress'}
+                  disabled={!canInteract || isSubmitting}
                   aria-label="Delete letter"
                 >
                   <Delete className="h-5 w-5" aria-hidden="true" />
@@ -1191,19 +1296,36 @@ export default function GamePage() {
             <ul className="mt-4 space-y-3">
               {game.players.map((playerId) => {
                 const active = (game.activePlayers ?? []).includes(playerId);
+                const isCurrentTurnPlayer = game.currentTurnPlayerId === playerId;
                 return (
                   <li
                     key={playerId}
-                    className="flex items-center justify-between rounded-2xl border border-[hsl(var(--panel-border))] bg-[hsl(var(--panel-neutral))] px-4 py-3 dark:border-border dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12]"
+                    className={cn(
+                      'flex items-center justify-between rounded-2xl border border-[hsl(var(--panel-border))] bg-[hsl(var(--panel-neutral))] px-4 py-3 dark:border-border dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12]',
+                      isCurrentTurnPlayer && 'border-[hsl(var(--accent))] shadow-[0_10px_24px_rgba(0,0,0,0.35)]'
+                    )}
                   >
                     <div>
-                      <p className="text-sm font-semibold">{playerId === userId ? 'You' : `Player ${playerId.slice(-4)}`}</p>
-                      {!active && <p className="text-xs text-muted-foreground">Away</p>}
+                      <p className="text-sm font-semibold">{formatPlayerLabel(playerId)}</p>
+                      <p
+                        className={cn(
+                          'text-xs',
+                          isCurrentTurnPlayer
+                            ? 'font-semibold text-[hsl(var(--accent))]'
+                            : 'text-muted-foreground'
+                        )}
+                      >
+                        {isCurrentTurnPlayer ? 'Παίζει τώρα' : active ? 'Online' : 'Away'}
+                      </p>
                     </div>
                     <span
                       className={cn(
                         'h-2.5 w-2.5 rounded-full',
-                        active ? 'bg-[hsl(var(--accent))]' : 'bg-muted-foreground'
+                        isCurrentTurnPlayer
+                          ? 'bg-[hsl(var(--accent))]'
+                          : active
+                            ? 'bg-[hsl(var(--accent))]/60'
+                            : 'bg-muted-foreground'
                       )}
                     />
                   </li>
@@ -1220,7 +1342,7 @@ export default function GamePage() {
                       key={spectatorId}
                       className="flex items-center justify-between rounded-2xl border border-[hsl(var(--panel-border))] bg-[hsl(var(--panel-sage))] px-4 py-2 text-sm dark:border-border dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12]"
                     >
-                      <span>{spectatorId === userId ? 'You' : `Viewer ${spectatorId.slice(-4)}`}</span>
+                      <span>{formatPlayerLabel(spectatorId, 'Viewer')}</span>
                       <span className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Watching</span>
                     </li>
                   ))}
