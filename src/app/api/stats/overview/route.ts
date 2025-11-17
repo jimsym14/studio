@@ -30,8 +30,9 @@ const isLobbyFresh = (lobby: LobbyRecord, cutoffMs: number) => {
   return typeof lastActivity === 'number' && lastActivity >= cutoffMs;
 };
 
-const hasWaitingOccupants = (lobby: LobbyRecord) =>
-  (lobby.activePlayers?.length ?? lobby.players?.length ?? 0) > 0;
+const getActivePlayerIds = (lobby: LobbyRecord) => sanitizeIds(lobby.activePlayers);
+
+const hasWaitingOccupants = (lobby: LobbyRecord) => getActivePlayerIds(lobby).length > 0;
 
 const fallbackPlayerLabel = (playerId?: string | null) => {
   if (!playerId) return 'Unknown player';
@@ -47,18 +48,11 @@ const fallbackPlayerLabel = (playerId?: string | null) => {
 const sanitizeIds = (ids?: string[]) =>
   Array.from(new Set((ids ?? []).filter((value): value is string => typeof value === 'string' && value.length > 0)));
 
-const derivePlayerCredits = (game: LobbyRecord): string[] => {
-  if (game.gameType === 'solo') {
-    return [game.creatorId];
-  }
-  if (game.multiplayerMode === 'co-op') {
-    const roster = sanitizeIds(game.players);
-    return roster.length ? roster : [game.creatorId];
-  }
+const deriveWinningPlayers = (game: LobbyRecord): string[] => {
   if (game.winnerId) {
-    return [game.winnerId];
+    return sanitizeIds([game.winnerId]);
   }
-  return [game.creatorId];
+  return [];
 };
 
 const pickTop = (counts: Record<string, number>) => {
@@ -75,12 +69,12 @@ const formatLeader = (
   entry: { playerId: string; count: number } | null,
   nameLookup: Record<string, string>
 ): LeaderboardEntry => {
-  if (!entry) {
-    return { playerId: null, displayName: 'No data yet', count: 0 };
+  if (!entry || entry.count <= 1) {
+    return { playerId: null, displayName: '-', count: entry?.count ?? 0 };
   }
   return {
     playerId: entry.playerId,
-    displayName: nameLookup[entry.playerId] ?? fallbackPlayerLabel(entry.playerId),
+    displayName: nameLookup[entry.playerId] ?? '-',
     count: entry.count,
   };
 };
@@ -99,15 +93,12 @@ export async function GET() {
     const [activeSnapshot, completedSnapshot] = await Promise.all([
       adminDb
         .collection('games')
-        .where('gameType', '==', 'multiplayer')
-        .where('status', 'in', ['waiting', 'in_progress'])
         .where('lastActivityAt', '>=', activeCutoffIso)
         .orderBy('lastActivityAt', 'desc')
         .limit(ACTIVE_QUERY_LIMIT)
         .get(),
       adminDb
         .collection('games')
-        .where('status', '==', 'completed')
         .where('completedAt', '>=', monthStartIso)
         .orderBy('completedAt', 'desc')
         .limit(COMPLETED_MONTH_LIMIT)
@@ -120,24 +111,26 @@ export async function GET() {
     }));
 
     const activeLobbies = activeDocs.filter(
-      (lobby) => isLobbyFresh(lobby, now - STALE_THRESHOLD_MS) && hasWaitingOccupants(lobby)
+      (lobby) =>
+        lobby.gameType === 'multiplayer' &&
+        ['waiting', 'in_progress'].includes(lobby.status) &&
+        isLobbyFresh(lobby, now - STALE_THRESHOLD_MS) &&
+        hasWaitingOccupants(lobby)
     );
     const waitingLobbies = activeLobbies.filter((lobby) => lobby.status === 'waiting');
     const privateRooms = waitingLobbies.filter((lobby) => (lobby.visibility ?? 'public') === 'private');
 
     const playersOnline = new Set<string>();
     activeLobbies.forEach((lobby) => {
-      lobby.activePlayers?.forEach((playerId) => {
-        if (playerId) {
-          playersOnline.add(playerId);
-        }
-      });
+      getActivePlayerIds(lobby).forEach((playerId) => playersOnline.add(playerId));
     });
 
-    const monthDocs: LobbyRecord[] = completedSnapshot.docs.map((doc) => ({
-      id: doc.id,
-      ...(doc.data() as GameDocument),
-    }));
+    const monthDocs: LobbyRecord[] = completedSnapshot.docs
+      .map((doc) => ({
+        id: doc.id,
+        ...(doc.data() as GameDocument),
+      }))
+      .filter((game) => game.status === 'completed');
 
     let wordsSolvedToday = 0;
     const todayCounts: Record<string, number> = {};
@@ -146,12 +139,15 @@ export async function GET() {
     monthDocs.forEach((game) => {
       const completedAt = game.completedAt;
       if (!completedAt) return;
-      const creditedPlayers = derivePlayerCredits(game);
+      const creditedPlayers = deriveWinningPlayers(game);
+      if (!creditedPlayers.length) {
+        return;
+      }
       const isToday = completedAt >= todayStartIso;
       if (isToday) {
         wordsSolvedToday += 1;
       }
-      creditedPlayers.forEach((playerId) => {
+      creditedPlayers.forEach((playerId: string) => {
         if (!playerId) return;
         monthCounts[playerId] = (monthCounts[playerId] ?? 0) + 1;
         if (isToday) {

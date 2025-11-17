@@ -30,6 +30,7 @@ import {
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Separator } from '@/components/ui/separator';
 import { createGame } from '@/lib/actions/game';
+import { rememberLobbyPasscode } from '@/lib/lobby-passcode';
 import { useToast } from '@/hooks/use-toast';
 import { useFirebase } from '@/components/firebase-provider';
 import { cn } from '@/lib/utils';
@@ -122,7 +123,7 @@ export function SettingsModal({ isOpen, gameType, onClose }: SettingsModalProps)
     
     setIsSubmitting(true);
     try {
-      const cleanedPasscode = values.visibility === 'private' ? values.passcode : '';
+  const cleanedPasscode = values.visibility === 'private' ? values.passcode : '';
       const gameSettings = {
         ...values,
         passcode: cleanedPasscode ?? '',
@@ -139,6 +140,9 @@ export function SettingsModal({ isOpen, gameType, onClose }: SettingsModalProps)
       const gameId = await createGame(gameSettings, firebaseConfig, authToken);
       
       if (gameId) {
+        if (values.visibility === 'private' && cleanedPasscode) {
+          rememberLobbyPasscode(gameId, cleanedPasscode);
+        }
         router.push(gameType === 'multiplayer' ? `/lobby/${gameId}` : `/game/${gameId}`);
         onClose();
       } else {

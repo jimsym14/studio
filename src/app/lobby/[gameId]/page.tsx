@@ -12,9 +12,12 @@ import {
   Crown,
   Handshake,
   Hourglass,
+  KeyRound,
   Link2,
+  Lock,
   Swords,
   Timer,
+  Unlock,
   Users,
   WifiOff,
   type LucideIcon,
@@ -32,6 +35,7 @@ import { usePlayerNames } from '@/hooks/use-player-names';
 import type { GameDocument } from '@/types/game';
 import { hashToHex } from '@/lib/hash-client';
 import { readLobbyAccess, rememberLobbyAccess } from '@/lib/lobby-access';
+import { readLobbyPasscode, rememberLobbyPasscode } from '@/lib/lobby-passcode';
 
 const LOBBY_GRACE_MINUTES = 3;
 const INACTIVITY_MINUTES = 30;
@@ -197,11 +201,13 @@ export default function LobbyPage() {
   const [game, setGame] = useState<GameDocument | null>(null);
   const [loading, setLoading] = useState(true);
   const [isCopied, setIsCopied] = useState(false);
+  const [isPasscodeCopied, setIsPasscodeCopied] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [passcodeInput, setPasscodeInput] = useState('');
   const [passcodeError, setPasscodeError] = useState<string | null>(null);
   const [isVerifyingPasscode, setIsVerifyingPasscode] = useState(false);
   const [cachedAccessHash, setCachedAccessHash] = useState<string | null>(null);
+  const [rememberedPasscode, setRememberedPasscode] = useState<string | null>(null);
   const lobbyCloseAlertedRef = useRef(false);
   const inactivityAlertedRef = useRef(false);
 
@@ -221,6 +227,7 @@ export default function LobbyPage() {
 
   useEffect(() => {
     setCachedAccessHash(readLobbyAccess(gameId));
+    setRememberedPasscode(readLobbyPasscode(gameId));
   }, [gameId]);
 
   const isLobbyPlayer = Boolean(userId && game?.players?.includes(userId));
@@ -308,11 +315,28 @@ export default function LobbyPage() {
       }
 
       const gameData = docSnap.data() as GameDocument;
-      const passProtected = (gameData.hasPasscode ?? false) && Boolean(gameData.passcodeHash);
-      const cachedMatch = Boolean(passProtected && gameData.passcodeHash && cachedAccessHash && cachedAccessHash === gameData.passcodeHash);
-      setGame(gameData);
+      const rawPlayers = Array.isArray(gameData.players) ? gameData.players : [];
+      const normalizedPlayers = Array.from(
+        new Set(rawPlayers.filter((id): id is string => typeof id === 'string' && id.length > 0))
+      );
+      const nextGameData =
+        normalizedPlayers.length === rawPlayers.length ? gameData : { ...gameData, players: normalizedPlayers };
 
-      const players = gameData.players ?? [];
+      if (normalizedPlayers.length !== rawPlayers.length) {
+        try {
+          await updateDoc(gameRef, { players: normalizedPlayers });
+        } catch (error) {
+          console.error('Failed to normalize lobby roster', error);
+        }
+      }
+
+      const passProtected = (nextGameData.hasPasscode ?? false) && Boolean(nextGameData.passcodeHash);
+      const cachedMatch = Boolean(
+        passProtected && nextGameData.passcodeHash && cachedAccessHash && cachedAccessHash === nextGameData.passcodeHash
+      );
+      setGame(nextGameData);
+
+      const players = nextGameData.players ?? [];
       const isPlayer = players.includes(userId);
 
       if (passProtected && !isPlayer && !cachedMatch) {
@@ -320,7 +344,7 @@ export default function LobbyPage() {
         return;
       }
 
-      if (!isPlayer && gameData.status === 'waiting' && players.length < 2) {
+      if (!isPlayer && nextGameData.status === 'waiting' && players.length < 2) {
         try {
           const nowIso = new Date().toISOString();
           await updateDoc(gameRef, {
@@ -336,9 +360,9 @@ export default function LobbyPage() {
       }
 
       if (
-        gameData.status === 'waiting' &&
+        nextGameData.status === 'waiting' &&
         players.length >= 2 &&
-        (gameData.activePlayers?.length ?? 0) >= 2
+        (nextGameData.activePlayers?.length ?? 0) >= 2
       ) {
         try {
           await updateDoc(gameRef, { status: 'in_progress' });
@@ -348,7 +372,7 @@ export default function LobbyPage() {
         }
       }
 
-      if (gameData.status === 'in_progress') {
+      if (nextGameData.status === 'in_progress') {
         router.push(`/game/${gameId}`);
       }
 
@@ -425,13 +449,16 @@ export default function LobbyPage() {
     setIsVerifyingPasscode(true);
     setPasscodeError(null);
     try {
-      const hashed = await hashToHex(passcodeInput.trim());
+      const trimmedPasscode = passcodeInput.trim();
+      const hashed = await hashToHex(trimmedPasscode);
       if (hashed !== game.passcodeHash) {
         setPasscodeError('That passcode does not match.');
         return;
       }
       rememberLobbyAccess(gameId, hashed);
       setCachedAccessHash(hashed);
+      rememberLobbyPasscode(gameId, trimmedPasscode);
+      setRememberedPasscode(trimmedPasscode);
       setPasscodeInput('');
     } catch (error) {
       console.error('Failed to verify lobby passcode', error);
@@ -443,6 +470,29 @@ export default function LobbyPage() {
 
   const trackedPlayerIds = game?.players ?? [];
   const { getPlayerName } = usePlayerNames({ db, playerIds: trackedPlayerIds });
+
+  const isPrivateLobby = (game?.visibility ?? 'public') === 'private';
+  const passcodeDisplayValue = isPrivateLobby ? rememberedPasscode : null;
+  const hasPassRequirement = isPrivateLobby && (game?.hasPasscode ?? false) && Boolean(game?.passcodeHash);
+  const cachedPasscodeMatch = Boolean(hasPassRequirement && game?.passcodeHash && cachedAccessHash === game?.passcodeHash);
+  const showPasscodeGate = Boolean(hasPassRequirement && !isLobbyPlayer && !cachedPasscodeMatch);
+
+  const handleCopyPasscode = useCallback(async () => {
+    if (!passcodeDisplayValue) return;
+    if (typeof navigator === 'undefined' || !navigator.clipboard) {
+      toast({ variant: 'destructive', title: 'Clipboard unavailable', description: 'Enter it manually instead.' });
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(passcodeDisplayValue);
+      setIsPasscodeCopied(true);
+      toast({ title: 'Passcode copied', description: 'Share it securely.' });
+      window.setTimeout(() => setIsPasscodeCopied(false), 2000);
+    } catch (error) {
+      console.error('Failed to copy passcode', error);
+      toast({ variant: 'destructive', title: 'Copy failed', description: 'Enter it manually instead.' });
+    }
+  }, [passcodeDisplayValue, toast]);
 
   if (loading || !game) {
     return <LoadingState />;
@@ -488,21 +538,16 @@ export default function LobbyPage() {
   const turnDisplayValue = turnCountdown ?? formatTurnSettingLabel(game.turnTime);
 
   const timerCards = [
-    { label: 'Match limit', value: matchDisplayValue, icon: Timer, accent: 'primary' as const },
-    { label: 'Turn limit', value: turnDisplayValue, icon: Clock3, accent: 'emerald' as const },
+    { label: 'Match limit', value: matchDisplayValue, icon: Timer, accent: 'muted' as const },
+    { label: 'Turn limit', value: turnDisplayValue, icon: Clock3, accent: 'muted' as const },
     { label: 'Idle close', value: inactivityCountdown ?? '—', icon: Hourglass, accent: 'muted' as const },
-    { label: 'Lobby grace', value: lobbyCountdown ?? '∞', icon: AlertTriangle, accent: 'amber' as const },
+    { label: 'Lobby grace', value: lobbyCountdown ?? '∞', icon: AlertTriangle, accent: 'muted' as const },
   ];
-
-  const isPrivateLobby = (game.visibility ?? 'public') === 'private';
-  const hasPassRequirement = isPrivateLobby && (game.hasPasscode ?? false) && Boolean(game.passcodeHash);
-  const cachedPasscodeMatch = Boolean(hasPassRequirement && game.passcodeHash && cachedAccessHash === game.passcodeHash);
-  const showPasscodeGate = hasPassRequirement && !isLobbyPlayer && !cachedPasscodeMatch;
 
   return (
     <div
       className={cn(
-        'relative min-h-screen overflow-hidden px-4 py-10 text-slate-900 transition-colors sm:px-8',
+        'relative min-h-screen overflow-x-hidden px-3 py-8 text-slate-900 transition-colors sm:px-8 sm:py-10',
         isDarkTheme ? 'bg-[#04050a] text-white' : 'bg-gradient-to-b from-[#fdfbff] via-[#eef3ff] to-[#dce8ff] text-slate-900'
       )}
     >
@@ -563,35 +608,23 @@ export default function LobbyPage() {
         />
       </div>
 
-      <div className="relative z-10 mx-auto flex w-full max-w-6xl flex-col gap-10">
-        <div className="flex flex-col items-center gap-4 text-center sm:flex-row sm:items-center sm:justify-between sm:text-left">
-          <div className="flex items-center justify-center">
-            <Logo />
-          </div>
-          <p
-            className={cn(
-              'text-sm leading-relaxed',
-              isDarkTheme ? 'text-white/75' : 'text-slate-600'
-            )}
-          >
-            Track invites, timers, and ready players from any device.
-          </p>
-        </div>
-
+      <div className="relative z-10 mx-auto flex w-full max-w-5xl flex-col gap-6 px-1 sm:px-4 lg:px-0">
         <motion.section
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.35 }}
           className={cn(
-            'space-y-8 rounded-[32px] border p-5 shadow-[0_35px_80px_rgba(0,0,0,0.15)] backdrop-blur-lg sm:p-10',
-            isDarkTheme ? 'border-white/10 bg-white/[0.04]' : 'pale-orange-shell text-slate-900'
+            'mx-auto w-full max-w-[520px] space-y-5 overflow-hidden rounded-[28px] border p-4 shadow-[0_35px_80px_rgba(0,0,0,0.35)] backdrop-blur-2xl sm:max-w-3xl sm:space-y-8 sm:p-8 lg:max-w-none lg:rounded-[32px] lg:p-10',
+            isDarkTheme
+              ? 'border-white/15 bg-black/60 text-white/90 shadow-[0_40px_120px_rgba(0,0,0,0.65)]'
+              : 'pale-orange-shell text-slate-900'
           )}
         >
-          <div className="grid gap-8 lg:grid-cols-[1.2fr_0.8fr]">
-            <div className="space-y-6">
+          <div className="grid gap-6 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)] lg:gap-8">
+            <div className="min-w-0 space-y-5 sm:space-y-6">
               <div
                 className={cn(
-                  'rounded-[28px] px-5 py-4 text-sm',
+                  'rounded-[24px] px-4 py-3 text-sm sm:px-5 sm:py-4',
                   isDarkTheme
                     ? 'border border-white/15 bg-black/20 text-white shadow-[inset_6px_6px_20px_rgba(0,0,0,0.6),inset_-4px_-4px_12px_rgba(255,255,255,0.08)]'
                     : 'glass-panel-strong text-slate-800'
@@ -633,7 +666,7 @@ export default function LobbyPage() {
                 </div>
               </div>
 
-              <div className="flex flex-wrap items-center gap-3">
+              <div className="flex w-full min-w-0 flex-wrap items-center gap-2">
                 <ModeBadge game={game} isDark={isDarkTheme} />
                 <span
                   className={cn(
@@ -644,11 +677,44 @@ export default function LobbyPage() {
                   <Users className="h-4 w-4" />
                   {activePlayersCount}/{Math.max(2, totalPlayers)} Ready
                 </span>
+                <span
+                  className={cn(
+                    'inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] sm:tracking-[0.35em]',
+                    isDarkTheme ? 'border-white/15 bg-white/5 text-white/80' : 'border-slate-200 bg-white text-slate-700'
+                  )}
+                >
+                  {isPrivateLobby ? <Lock className="h-4 w-4" /> : <Unlock className="h-4 w-4" />}
+                  {isPrivateLobby ? 'Private' : 'Public'}
+                </span>
+                {isPrivateLobby && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void handleCopyPasscode();
+                    }}
+                    disabled={!passcodeDisplayValue}
+                    className={cn(
+                      'inline-flex max-w-full items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] transition-colors sm:tracking-[0.35em]',
+                      isDarkTheme
+                        ? 'border-white/15 bg-white/5 text-white/80'
+                        : 'border-slate-200 bg-white text-slate-700',
+                      !passcodeDisplayValue && 'opacity-60'
+                    )}
+                    title={passcodeDisplayValue ? 'Copy passcode' : 'Passcode appears after you enter it on this device.'}
+                  >
+                    <KeyRound className="h-4 w-4" />
+                    <span className="font-mono text-xs tracking-normal sm:text-sm">
+                      {passcodeDisplayValue ?? '—'}
+                    </span>
+                    {isPasscodeCopied && <Check className="h-4 w-4" />}
+                  </button>
+                )}
               </div>
 
-              <p className={cn('text-base leading-relaxed', isDarkTheme ? 'text-white/80' : 'text-slate-600')}>
+              <p className={cn('break-words text-base leading-relaxed', isDarkTheme ? 'text-white/80' : 'text-slate-600')}>
                 {statusText}
               </p>
+
 
               {lobbyCountdown && noActivePlayers && (
                 <div
@@ -662,7 +728,7 @@ export default function LobbyPage() {
                 </div>
               )}
 
-              <div className="grid gap-4 sm:grid-cols-2">
+              <div className="grid w-full gap-2.5 sm:grid-cols-2 sm:gap-4">
                 {timerCards.map((card) => (
                   <TimerCard key={card.label} {...card} isDark={isDarkTheme} />
                 ))}
@@ -672,7 +738,7 @@ export default function LobbyPage() {
                 type="button"
                 onClick={handleReturnHome}
                 className={cn(
-                  'w-full rounded-2xl border px-5 py-3 text-xs font-semibold uppercase tracking-[0.25em] transition-colors sm:tracking-[0.4em]',
+                  'w-full rounded-2xl border px-5 py-3 text-xs font-semibold uppercase tracking-[0.18em] transition-colors sm:tracking-[0.35em]',
                   isDarkTheme
                     ? 'border-white/20 bg-white/5 text-white hover:bg-white/10'
                     : 'border-slate-300 bg-white text-slate-700 shadow-sm hover:bg-slate-50'
@@ -683,7 +749,7 @@ export default function LobbyPage() {
 
               <div
                 className={cn(
-                  'rounded-3xl px-5 py-4',
+                  'rounded-3xl px-4 py-4 sm:px-5',
                   isDarkTheme
                     ? 'border border-white/10 bg-white/[0.02] shadow-[inset_6px_6px_18px_rgba(0,0,0,0.55),inset_-4px_-4px_12px_rgba(255,255,255,0.05)]'
                     : 'glass-panel-soft text-slate-900'
@@ -697,7 +763,7 @@ export default function LobbyPage() {
                 >
                   Invite link
                 </p>
-                <div className="mt-3 flex flex-col gap-3 sm:flex-row">
+                <div className="mt-3 flex w-full flex-col gap-3 sm:flex-row">
                   <div
                     className={cn(
                       'flex flex-1 items-center gap-2 rounded-2xl px-4 py-3 text-sm font-mono',
@@ -730,24 +796,21 @@ export default function LobbyPage() {
 
             <div
               className={cn(
-                'space-y-5 rounded-[28px] p-5',
+                'min-w-0 space-y-4 rounded-[24px] p-4 sm:space-y-5 sm:p-5',
                 isDarkTheme
                   ? 'border border-white/10 bg-white/[0.02] shadow-[inset_6px_6px_18px_rgba(0,0,0,0.5),inset_-4px_-4px_12px_rgba(255,255,255,0.05)]'
                   : 'glass-panel-soft text-slate-900'
               )}
             >
-              <div className="flex items-center justify-between">
-                <div>
-                  <p
-                    className={cn(
-                      'text-xs uppercase tracking-[0.25em] sm:tracking-[0.4em]',
-                      isDarkTheme ? 'text-white/60' : 'text-slate-500'
-                    )}
-                  >
-                    Players
-                  </p>
-                  <p className="text-2xl font-black tracking-tight text-slate-900 dark:text-white">{totalPlayers || 0}</p>
-                </div>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p
+                  className={cn(
+                    'text-xs uppercase tracking-[0.25em] sm:tracking-[0.35em]',
+                    isDarkTheme ? 'text-white/60' : 'text-slate-500'
+                  )}
+                >
+                  Players
+                </p>
                 <span
                   className={cn(
                     'rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] sm:tracking-[0.3em]',
@@ -768,14 +831,14 @@ export default function LobbyPage() {
                       <div
                         key={playerId}
                         className={cn(
-                          'flex items-center justify-between rounded-2xl px-4 py-3',
+                          'flex min-w-0 items-center justify-between gap-3 rounded-2xl px-4 py-3',
                           isDarkTheme
                             ? 'border border-white/10 bg-gradient-to-r from-white/[0.04] to-transparent'
                             : 'glass-panel-soft text-slate-900'
                         )}
                       >
-                        <div>
-                          <p className="text-sm font-semibold">{resolvePlayerName(playerId)}</p>
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold">{resolvePlayerName(playerId)}</p>
                           <p className="text-xs text-muted-foreground">{abbreviateId(playerId)}</p>
                         </div>
                         <span
