@@ -6,10 +6,11 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { z } from 'zod';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Crown, Users, Gamepad2, Hourglass, Swords, Handshake } from 'lucide-react';
+import { Crown, Users, Gamepad2, Hourglass, Swords, Handshake, Lock, Unlock } from 'lucide-react';
 import { useTheme } from 'next-themes';
 
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import {
   Dialog,
   DialogContent,
@@ -41,13 +42,38 @@ interface SettingsModalProps {
   onClose: () => void;
 }
 
-const formSchema = z.object({
-  wordLength: z.number().min(4).max(6),
-  matchTime: z.enum(['unlimited', '3', '5']),
-  turnTime: z.enum(['unlimited', '30', '60']),
-});
+const passcodeField = z
+  .string()
+  .optional()
+  .transform((value) => value?.trim() ?? '');
+
+const formSchema = z
+  .object({
+    wordLength: z.number().min(4).max(6),
+    matchTime: z.enum(['unlimited', '3', '5']),
+    turnTime: z.enum(['unlimited', '30', '60']),
+    visibility: z.enum(['public', 'private']),
+    passcode: passcodeField,
+  })
+  .superRefine((data, ctx) => {
+    if (data.visibility === 'private' && !data.passcode) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['passcode'],
+        message: 'Private lobbies need a passcode.',
+      });
+    }
+  });
 
 type FormValues = z.infer<typeof formSchema>;
+
+const FORM_DEFAULTS: FormValues = {
+  wordLength: 5,
+  matchTime: 'unlimited',
+  turnTime: 'unlimited',
+  visibility: 'public',
+  passcode: '',
+};
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -63,7 +89,7 @@ export function SettingsModal({ isOpen, gameType, onClose }: SettingsModalProps)
   const router = useRouter();
   const { toast } = useToast();
   const { theme } = useTheme();
-  const { userId, user } = useFirebase();
+  const { userId, user, profile } = useFirebase();
   const [multiplayerMode, setMultiplayerMode] = useState<'pvp' | 'co-op'>('pvp');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [hoveredButton, setHoveredButton] = useState<string | null>(null);
@@ -72,19 +98,17 @@ export function SettingsModal({ isOpen, gameType, onClose }: SettingsModalProps)
 
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
-    defaultValues: {
-      wordLength: 5,
-      matchTime: 'unlimited',
-      turnTime: 'unlimited',
-    },
+    defaultValues: FORM_DEFAULTS,
   });
 
   useEffect(() => {
     if (isOpen) {
-      form.reset();
+      form.reset(FORM_DEFAULTS);
       setMultiplayerMode('pvp');
     }
   }, [isOpen, form]);
+
+  const visibilityValue = form.watch('visibility');
 
   const handleStartGame = async (values: FormValues) => {
     if (!userId) {
@@ -98,11 +122,14 @@ export function SettingsModal({ isOpen, gameType, onClose }: SettingsModalProps)
     
     setIsSubmitting(true);
     try {
+      const cleanedPasscode = values.visibility === 'private' ? values.passcode : '';
       const gameSettings = {
         ...values,
+        passcode: cleanedPasscode ?? '',
         gameType,
         multiplayerMode: gameType === 'multiplayer' ? multiplayerMode : null,
         creatorId: userId,
+        creatorDisplayName: profile?.username ?? user?.displayName ?? 'Player',
       };
       const authToken = await user?.getIdToken?.();
       if (!authToken) {
@@ -260,13 +287,97 @@ export function SettingsModal({ isOpen, gameType, onClose }: SettingsModalProps)
 
                   {gameType === 'multiplayer' && (
                     <>
+                      <Separator />
+
+                      <FormField
+                        control={form.control}
+                        name="visibility"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel className="flex items-center">
+                              <Lock className="mr-2 h-4 w-4" /> Lobby visibility
+                            </FormLabel>
+                            <FormControl>
+                              <RadioGroup
+                                onValueChange={field.onChange}
+                                value={field.value}
+                                className="grid grid-cols-2 gap-3"
+                              >
+                                <FormItem>
+                                  <FormControl>
+                                    <RadioGroupItem value="public" id="vis-public" className="sr-only" />
+                                  </FormControl>
+                                  <FormLabel
+                                    htmlFor="vis-public"
+                                    className={cn(
+                                      'flex flex-col gap-1 rounded-2xl border-2 border-muted bg-background/40 px-4 py-3 text-left text-sm font-semibold transition hover:border-primary/70',
+                                      field.value === 'public' && 'border-primary bg-primary/10 text-primary'
+                                    )}
+                                  >
+                                    <span className="flex items-center gap-2 text-base">
+                                      <Unlock className="h-4 w-4" /> Public
+                                    </span>
+                                    <span className="text-xs font-normal text-muted-foreground">
+                                      Listed in lobby browser with instant joins.
+                                    </span>
+                                  </FormLabel>
+                                </FormItem>
+                                <FormItem>
+                                  <FormControl>
+                                    <RadioGroupItem value="private" id="vis-private" className="sr-only" />
+                                  </FormControl>
+                                  <FormLabel
+                                    htmlFor="vis-private"
+                                    className={cn(
+                                      'flex flex-col gap-1 rounded-2xl border-2 border-muted bg-background/40 px-4 py-3 text-left text-sm font-semibold transition hover:border-primary/70',
+                                      field.value === 'private' && 'border-primary bg-primary/10 text-primary'
+                                    )}
+                                  >
+                                    <span className="flex items-center gap-2 text-base">
+                                      <Lock className="h-4 w-4" /> Private
+                                    </span>
+                                    <span className="text-xs font-normal text-muted-foreground">
+                                      Hidden in browse list. Share passcode manually.
+                                    </span>
+                                  </FormLabel>
+                                </FormItem>
+                              </RadioGroup>
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+
+                      {visibilityValue === 'private' && (
+                        <FormField
+                          control={form.control}
+                          name="passcode"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel className="flex items-center">
+                                <Lock className="mr-2 h-4 w-4" /> Passcode
+                              </FormLabel>
+                              <FormControl>
+                                <Input
+                                  {...field}
+                                  type="password"
+                                  placeholder="Enter a secret phrase"
+                                  className="rounded-2xl border border-muted bg-background/40 px-4 py-5 text-base"
+                                />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                      )}
+
                       <FormField
                         control={form.control}
                         name="turnTime"
                         render={({ field }) => (
                           <FormItem>
-                             <FormLabel className="flex items-center"><Hourglass className="mr-2 h-4 w-4" /> Turn Time</FormLabel>
-                             <FormControl>
+                            <FormLabel className="flex items-center"><Hourglass className="mr-2 h-4 w-4" /> Turn Time</FormLabel>
+                            <FormControl>
                               <RadioGroup
                                 onValueChange={field.onChange}
                                 defaultValue={field.value}
@@ -276,34 +387,35 @@ export function SettingsModal({ isOpen, gameType, onClose }: SettingsModalProps)
                                 <FormItem><FormControl><RadioGroupItem value="30" id="t-30" className="sr-only" /></FormControl><FormLabel htmlFor="t-30" className={cn("flex items-center justify-center p-2 rounded-md border-2 border-muted bg-transparent hover:border-primary cursor-pointer", field.value === "30" && "bg-primary text-primary-foreground")}>30s</FormLabel></FormItem>
                                 <FormItem><FormControl><RadioGroupItem value="60" id="t-60" className="sr-only" /></FormControl><FormLabel htmlFor="t-60" className={cn("flex items-center justify-center p-2 rounded-md border-2 border-muted bg-transparent hover:border-primary cursor-pointer", field.value === "60" && "bg-primary text-primary-foreground")}>60s</FormLabel></FormItem>
                               </RadioGroup>
-                             </FormControl>
+                            </FormControl>
                           </FormItem>
                         )}
                       />
+
                       <Separator />
                       <div className="space-y-2">
                         <FormLabel>Multiplayer Mode</FormLabel>
                         <div className="grid grid-cols-2 gap-4">
-                        <button 
-                          type="button"
-                          onMouseEnter={() => setHoveredButton('pvp')}
-                          onMouseLeave={() => setHoveredButton(null)}
-                          onClick={() => handleMultiplayerClick('pvp')}
-                          style={getButtonStyle('pvp')}
-                         >
-                          <Swords className="mr-2 h-5 w-5" />PvP
-                        </button>
-                        <button 
-                          type="button"
-                          onMouseEnter={() => setHoveredButton('co-op')}
-                          onMouseLeave={() => setHoveredButton(null)}
-                          onClick={() => handleMultiplayerClick('co-op')}
-                          style={getButtonStyle('co-op')}
-                        >
-                          <Handshake className="mr-2 h-5 w-5" />Co-op
-                        </button>
+                          <button 
+                            type="button"
+                            onMouseEnter={() => setHoveredButton('pvp')}
+                            onMouseLeave={() => setHoveredButton(null)}
+                            onClick={() => handleMultiplayerClick('pvp')}
+                            style={getButtonStyle('pvp')}
+                          >
+                            <Swords className="mr-2 h-5 w-5" />PvP
+                          </button>
+                          <button 
+                            type="button"
+                            onMouseEnter={() => setHoveredButton('co-op')}
+                            onMouseLeave={() => setHoveredButton(null)}
+                            onClick={() => handleMultiplayerClick('co-op')}
+                            style={getButtonStyle('co-op')}
+                          >
+                            <Handshake className="mr-2 h-5 w-5" />Co-op
+                          </button>
                         </div>
-                         <FormMessage />
+                        <FormMessage />
                       </div>
                     </>
                   )}

@@ -16,7 +16,7 @@ import {
   CornerDownLeft,
   Crown,
   Delete,
-  Flame,
+  DoorOpen,
   Handshake,
   Home,
   RefreshCcw,
@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useTheme } from 'next-themes';
 import { useParams, useRouter } from 'next/navigation';
 
 import { Button } from '@/components/ui/button';
@@ -160,6 +161,8 @@ export default function GamePage() {
   const router = useRouter();
   const { db, userId, user } = useFirebase();
   const { toast } = useToast();
+  const { resolvedTheme } = useTheme();
+  const isLightMode = resolvedTheme === 'light';
 
   const [game, setGame] = useState<GameDocument | null>(null);
   const [loading, setLoading] = useState(true);
@@ -971,7 +974,8 @@ export default function GamePage() {
   }, [pendingGuessTargetCount, submittedGuessCount]);
 
   const sharedEndButtonClasses = cn(
-    'inline-flex h-11 items-center justify-center gap-2 rounded-full border border-transparent px-5 text-sm font-semibold uppercase tracking-[0.2em] transition disabled:opacity-60',
+    'inline-flex h-11 items-center justify-center rounded-full border border-transparent text-sm font-semibold uppercase tracking-[0.2em] transition disabled:opacity-60',
+    'w-12 gap-0 px-0 sm:w-auto sm:gap-2 sm:px-5',
     'bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] shadow-[0_25px_55px_rgba(255,140,0,0.35)] hover:shadow-[0_30px_65px_rgba(255,140,0,0.45)]',
     'dark:bg-[hsl(var(--primary))]'
   );
@@ -982,9 +986,10 @@ export default function GamePage() {
           className={sharedEndButtonClasses}
           onClick={handleSoloEnd}
           disabled={!isPlayer || game?.status !== 'in_progress'}
+          aria-label="End game"
         >
-          <Flame className="h-4 w-4" />
-          End game
+          <DoorOpen className="h-4 w-4" />
+          <span className="hidden sm:inline">End game</span>
         </Button>
       )
     : (
@@ -992,9 +997,10 @@ export default function GamePage() {
           className={sharedEndButtonClasses}
           onClick={handleVoteToEnd}
           disabled={!isPlayer || hasVotedToEnd || game?.status !== 'in_progress'}
+          aria-label={hasVotedToEnd ? 'Vote sent' : 'Vote to end'}
         >
-          <Flame className="h-4 w-4" />
-          {hasVotedToEnd ? 'Vote sent' : 'Vote to end'}
+          <DoorOpen className="h-4 w-4" />
+          <span className="hidden sm:inline">{hasVotedToEnd ? 'Vote sent' : 'Vote to end'}</span>
         </Button>
       );
 
@@ -1092,8 +1098,20 @@ export default function GamePage() {
         </div>
 
         <div className="mt-10 space-y-8">
-          <div className="relative mx-auto max-w-lg rounded-[34px] border border-white/40 bg-white/25 px-4 py-6 shadow-[0_35px_90px_rgba(0,0,0,0.25)] backdrop-blur-2xl sm:px-6 dark:border-white/10 dark:bg-white/5">
-            <div className="pointer-events-none absolute inset-0 rounded-[34px] bg-gradient-to-br from-white/35 via-transparent to-white/10 opacity-70 dark:from-white/10 dark:via-transparent dark:to-white/5" />
+          <div
+            className={cn(
+              'relative mx-auto max-w-lg rounded-[34px] border px-4 py-6 shadow-[0_35px_90px_rgba(0,0,0,0.25)] backdrop-blur-2xl sm:px-6',
+              isLightMode
+                ? 'pale-orange-shell text-[#2b1409]'
+                : 'border-white/10 bg-gradient-to-br from-[#0f1119] via-[#0a0c14] to-[#05060a] text-white shadow-[0_35px_120px_rgba(0,0,0,0.65)]'
+            )}
+          >
+            <div
+              className={cn(
+                'pointer-events-none absolute inset-0 rounded-[34px]',
+                isLightMode ? 'hidden' : 'bg-gradient-to-br from-white/35 via-transparent to-white/10 opacity-70 dark:from-white/10 dark:via-transparent dark:to-white/5'
+              )}
+            />
             <div className="relative space-y-0">
             <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div className="flex flex-wrap items-center gap-2 ">
@@ -1196,8 +1214,20 @@ export default function GamePage() {
             </div>
           </div>
 
-          <div className="relative mx-auto max-w-xl rounded-[32px] border border-white/40 bg-white/20 p-5 shadow-[0_30px_80px_rgba(0,0,0,0.25)] backdrop-blur-2xl sm:p-6 dark:border-white/10 dark:bg-white/5">
-            <div className="pointer-events-none absolute inset-0 rounded-[32px] bg-gradient-to-t from-white/30 via-transparent to-white/5 opacity-80 dark:from-white/5 dark:via-transparent dark:to-white/0" />
+          <div
+            className={cn(
+              'relative mx-auto max-w-xl rounded-[32px] border p-5 shadow-[0_30px_80px_rgba(0,0,0,0.25)] backdrop-blur-2xl sm:p-6',
+              isLightMode
+                ? 'pale-orange-shell text-[#2b1409]'
+                : 'border-white/10 bg-gradient-to-b from-[#10121b] via-[#090a12] to-[#05060b] text-white shadow-[0_40px_120px_rgba(0,0,0,0.65)]'
+            )}
+          >
+            <div
+              className={cn(
+                'pointer-events-none absolute inset-0 rounded-[32px]',
+                isLightMode ? 'hidden' : 'bg-gradient-to-t from-white/30 via-transparent to-white/5 opacity-80 dark:from-white/5 dark:via-transparent dark:to-white/0'
+              )}
+            />
             <div className="relative space-y-2.5">
             {isPlayer && game.status === 'in_progress' && canInteract && (
               <div>
@@ -1221,7 +1251,10 @@ export default function GamePage() {
             )}
             <div className="space-y-2.5">
               {keyboardRows.map((row) => (
-                <div key={row} className="mx-auto flex w-full max-w-[320px] items-center justify-center gap-1 sm:max-w-[380px] sm:gap-1.5">
+                <div
+                  key={row}
+                  className="mx-auto flex w-full max-w-[280px] items-center justify-center gap-1 sm:max-w-[360px] sm:gap-1.5 lg:max-w-[420px]"
+                >
                   {row.split('').map((letter) => {
                     const hint = keyboardHints[letter];
                     const pulseActive = Boolean(keyPulse && keyPulse.letter === letter);
@@ -1235,7 +1268,7 @@ export default function GamePage() {
                         type="button"
                         style={keyStyle}
                         className={cn(
-                          'group relative isolate flex h-10 w-8 flex-none items-center justify-center rounded-[18px] border text-sm font-semibold uppercase tracking-wide text-[#2b140c] shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] transition-all duration-200 ease-out hover:-translate-y-1 hover:shadow-[0_14px_32px_rgba(0,0,0,0.25)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsla(var(--primary)/0.5)] focus-visible:ring-offset-2 focus-visible:ring-offset-transparent sm:h-12 sm:w-10 sm:text-sm',
+                          'group relative isolate flex h-9 w-7 flex-none items-center justify-center rounded-[18px] border text-xs font-semibold uppercase tracking-wide text-[#2b140c] shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] transition-all duration-200 ease-out hover:-translate-y-1 hover:shadow-[0_14px_32px_rgba(0,0,0,0.25)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsla(var(--primary)/0.5)] focus-visible:ring-offset-2 focus-visible:ring-offset-transparent sm:h-11 sm:w-9 sm:text-sm lg:h-12 lg:w-10',
                           hint
                             ? 'border-transparent text-white dark:text-white'
                             : 'border-white/50 bg-white/35 text-[#2b140c] backdrop-blur dark:border-white/10 dark:bg-white/10 dark:text-white/80',
@@ -1259,7 +1292,7 @@ export default function GamePage() {
               <div className="flex flex-wrap items-center justify-center gap-2 sm:flex-nowrap">
                 <Button
                   variant="ghost"
-                  className="shrink-0 gap-2 rounded-2xl border border-[hsla(var(--accent)/0.5)] bg-[hsla(var(--accent)/0.15)] px-6 py-2 text-[hsl(var(--accent))] shadow-[0_12px_28px_rgba(0,128,96,0.2)] dark:border-[hsla(var(--accent)/0.4)] dark:bg-white/5 dark:text-[hsl(var(--accent-foreground))]"
+                  className="shrink-0 gap-2 rounded-2xl border border-[hsla(var(--accent)/0.5)] bg-[hsla(var(--accent)/0.15)] px-5 py-2 text-[hsl(var(--accent))] shadow-[0_12px_28px_rgba(0,128,96,0.2)] dark:border-[hsla(var(--accent)/0.4)] dark:bg-white/5 dark:text-[hsl(var(--accent-foreground))] sm:px-6"
                   onClick={() => setCurrentGuess('')}
                   disabled={!canInteract}
                 >

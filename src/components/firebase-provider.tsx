@@ -23,6 +23,11 @@ import { doc, onSnapshot } from 'firebase/firestore';
 import { initializeFirebase } from '@/lib/firebase';
 import type { UserPreferences, UserProfile } from '@/types/user';
 import { updatePreferences as updateProfilePrefs } from '@/lib/profiles';
+import {
+  clearGuestSession,
+  GUEST_SESSION_EVENT,
+  hydrateGuestProfileFromSession,
+} from '@/lib/guest-session';
 
 const firebaseSingleton = initializeFirebase();
 
@@ -62,6 +67,7 @@ export function FirebaseProvider({ children }: { children: ReactNode }) {
     const unsubscribe = onAuthStateChanged(auth, (nextUser) => {
       setUser(nextUser);
       if (!nextUser) {
+        clearGuestSession();
         setProfile(null);
         setProfileReady(false);
       } else {
@@ -74,7 +80,25 @@ export function FirebaseProvider({ children }: { children: ReactNode }) {
   }, [auth]);
 
   useEffect(() => {
-    if (!db || !user) return;
+    if (!user) return;
+
+    if (user.isAnonymous) {
+      const applyGuestProfile = () => {
+        setProfile(hydrateGuestProfileFromSession(user.uid));
+        setProfileReady(true);
+      };
+
+      applyGuestProfile();
+
+      window.addEventListener(GUEST_SESSION_EVENT, applyGuestProfile);
+      return () => {
+        window.removeEventListener(GUEST_SESSION_EVENT, applyGuestProfile);
+        setProfile(null);
+        setProfileReady(false);
+      };
+    }
+
+    if (!db) return;
 
     const profileRef = doc(db, 'profiles', user.uid);
     const unsubscribe = onSnapshot(
@@ -100,6 +124,7 @@ export function FirebaseProvider({ children }: { children: ReactNode }) {
   const handleSignOut = useCallback(async () => {
     if (!auth) return;
     await firebaseSignOut(auth);
+    clearGuestSession();
   }, [auth]);
 
   const handleSavePreferences = useCallback(

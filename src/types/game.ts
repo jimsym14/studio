@@ -1,12 +1,17 @@
 import type { GuessResult } from '@/lib/wordle';
 
 export type GameStatus = 'waiting' | 'in_progress' | 'completed';
+export type LobbyVisibility = 'public' | 'private';
 
 export interface GameDocument {
   id?: string;
   creatorId: string;
+  creatorDisplayName?: string | null;
   gameType: 'solo' | 'multiplayer' | null;
   multiplayerMode?: 'pvp' | 'co-op' | null;
+  visibility: LobbyVisibility;
+  hasPasscode: boolean;
+  passcodeHash: string | null;
   status: GameStatus;
   players: string[];
   activePlayers: string[];

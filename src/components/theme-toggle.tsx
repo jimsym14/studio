@@ -7,7 +7,8 @@ import { useTheme } from 'next-themes';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { useFirebase } from '@/components/firebase-provider';
-import { isGuestProfile } from '@/types/user';
+import { isGuestProfile, type UserThemePreference } from '@/types/user';
+import { updateGuestSessionTheme } from '@/lib/guest-session';
 
 type ThemeToggleProps = React.ComponentProps<typeof Button>;
 
@@ -29,8 +30,12 @@ export function ThemeToggle({ className, onClick, ...props }: ThemeToggleProps) 
     if (event.defaultPrevented) return;
     const nextTheme = (resolvedTheme ?? theme) === 'dark' ? 'light' : 'dark';
     setTheme(nextTheme);
-    if (profile && !isGuestProfile(profile)) {
-      void savePreferences({ theme: nextTheme });
+    if (profile) {
+      if (isGuestProfile(profile)) {
+        updateGuestSessionTheme(nextTheme as UserThemePreference);
+      } else {
+        void savePreferences({ theme: nextTheme as UserThemePreference });
+      }
     }
   };
 

@@ -49,6 +49,7 @@ import {
 import { generateGuestHandle } from '@/lib/username-generator';
 import { DEFAULT_PREFERENCES, type AuthProviderType } from '@/types/user';
 import { cn } from '@/lib/utils';
+import { storeGuestSessionProfile } from '@/lib/guest-session';
 
 type TabKey = 'signin' | 'signup' | 'guest';
 
@@ -235,7 +236,7 @@ export default function LoginPage() {
   }, [signInForm, signUpForm, user]);
 
   const handleGuestEnter = async () => {
-    if (!auth || !db) return;
+    if (!auth) return;
     const validation = usernameSchema.safeParse({ username: guestName });
     if (!validation.success) {
       setGuestError(validation.error.format().username?._errors?.[0] ?? copy.errors.guestTaken);
@@ -252,19 +253,11 @@ export default function LoginPage() {
       }
       const credential = await signInAnonymously(auth);
       cleanupGuest = true;
-      const available = await isUsernameAvailable(db, guestName, credential.user.uid);
-      if (!available) {
-        setGuestError(copy.errors.guestTaken);
-        await signOut();
-        cleanupGuest = false;
-        return;
-      }
-      await upsertProfile(db, credential.user.uid, {
-        username: guestName,
-        authProvider: 'guest',
-        photoURL: `https://api.dicebear.com/7.x/thumbs/svg?seed=${encodeURIComponent(guestName)}`,
-        avatarSeed: guestName,
-        preferences: DEFAULT_PREFERENCES,
+      const cleanedName = sanitizeUsername(guestName);
+      storeGuestSessionProfile({
+        uid: credential.user.uid,
+        username: cleanedName,
+        avatarSeed: cleanedName,
       });
       cleanupGuest = false;
       toast(copy.toasts.guestReady);
@@ -406,6 +399,17 @@ export default function LoginPage() {
     setGuestError(null);
   };
 
+  const showRedirectScreen = Boolean(user && profile?.username && !usernameDialogOpen);
+
+  if (showRedirectScreen) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-b from-[#1a0800] via-[#050301] to-[#120400] text-white">
+        <Loader2 className="mb-4 h-10 w-10 animate-spin" />
+        <p className="text-lg font-semibold tracking-[0.3em] uppercase text-white/80">Redirecting home…</p>
+      </div>
+    );
+  }
+
   return (
     <div className="relative min-h-screen overflow-hidden bg-gradient-to-b from-[#1a0800] via-[#050301] to-[#120400] text-white font-moms">
       <OrangePulseBackdrop />
@@ -430,16 +434,6 @@ export default function LoginPage() {
 
         <div className="w-full max-w-3xl rounded-[36px] border border-white/20 bg-white/10 p-1 shadow-[0_35px_120px_rgba(0,0,0,0.45)] backdrop-blur-3xl">
           <div className="rounded-[32px] border border-white/25 bg-white/5 p-6 text-white shadow-inner shadow-black/30 sm:p-10">
-            {user && profile?.username && (
-              <motion.div
-                initial={{ opacity: 0, y: -10 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="mb-6 rounded-2xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-100"
-              >
-                <p>{`Already signed in as ${profile.username}. Redirecting to home…`}</p>
-              </motion.div>
-            )}
-
             <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as TabKey)}>
               <TabsList className="relative grid w-full grid-cols-3 gap-0 rounded-full border border-[#ff945a]/40 bg-gradient-to-r from-[#3b1c0f] via-[#1c0d06] to-[#3b1c0f] p-1 text-sm font-semibold uppercase tracking-wide shadow-[inset_0_6px_18px_rgba(0,0,0,0.45)]">
                 <motion.div
@@ -656,7 +650,10 @@ export default function LoginPage() {
                             setGuestName(event.target.value);
                             setGuestError(null);
                           }}
-                          className="flex-1 rounded-2xl border border-white/20 bg-white/10 px-4 py-5 text-base text-white"
+                          autoCapitalize="none"
+                          autoCorrect="off"
+                          spellCheck={false}
+                          className="flex-1 rounded-2xl border border-white/20 bg-white/10 px-4 py-5 text-lg text-white font-comic tracking-tight"
                         />
                         <Button
                           type="button"

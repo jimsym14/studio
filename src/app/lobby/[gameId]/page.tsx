@@ -23,12 +23,15 @@ import { arrayUnion, doc, onSnapshot, runTransaction, updateDoc } from 'firebase
 
 import { useFirebase } from '@/components/firebase-provider';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useToast } from '@/hooks/use-toast';
 import { Logo } from '@/components/logo';
 import { cn } from '@/lib/utils';
 import { usePlayerNames } from '@/hooks/use-player-names';
 import type { GameDocument } from '@/types/game';
+import { hashToHex } from '@/lib/hash-client';
+import { readLobbyAccess, rememberLobbyAccess } from '@/lib/lobby-access';
 
 const LOBBY_GRACE_MINUTES = 3;
 const INACTIVITY_MINUTES = 30;
@@ -100,7 +103,7 @@ const ModeBadge = ({ game, isDark }: { game: GameDocument | null; isDark: boolea
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-2 rounded-full border px-4 py-1 text-xs font-semibold uppercase tracking-[0.4em]',
+        'inline-flex items-center gap-2 rounded-full border px-4 py-1 text-xs font-semibold uppercase tracking-[0.25em] sm:tracking-[0.4em]',
         isDark
           ? 'border-white/15 bg-white/[0.04] text-white'
           : 'border-slate-200/80 bg-white text-slate-600'
@@ -142,13 +145,15 @@ const TimerCard = ({
 }) => (
   <div
     className={cn(
-      'rounded-2xl border p-3 shadow-sm',
-      isDark ? 'border-white/10 bg-white/5' : 'border-slate-200 bg-white'
+      'rounded-2xl p-3 transition-all',
+      isDark
+        ? 'border border-white/10 bg-white/5 shadow-[inset_6px_6px_18px_rgba(0,0,0,0.55),inset_-4px_-4px_12px_rgba(255,255,255,0.05)]'
+        : 'glass-panel-soft text-slate-900'
     )}
   >
     <div
       className={cn(
-        'flex items-center justify-between text-xs font-semibold uppercase tracking-[0.35em]',
+        'flex items-center justify-between text-xs font-semibold uppercase tracking-[0.2em] sm:tracking-[0.35em]',
         isDark ? 'text-white/70' : 'text-slate-500'
       )}
     >
@@ -193,6 +198,10 @@ export default function LobbyPage() {
   const [loading, setLoading] = useState(true);
   const [isCopied, setIsCopied] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  const [passcodeInput, setPasscodeInput] = useState('');
+  const [passcodeError, setPasscodeError] = useState<string | null>(null);
+  const [isVerifyingPasscode, setIsVerifyingPasscode] = useState(false);
+  const [cachedAccessHash, setCachedAccessHash] = useState<string | null>(null);
   const lobbyCloseAlertedRef = useRef(false);
   const inactivityAlertedRef = useRef(false);
 
@@ -210,7 +219,21 @@ export default function LobbyPage() {
     return () => window.clearInterval(interval);
   }, []);
 
+  useEffect(() => {
+    setCachedAccessHash(readLobbyAccess(gameId));
+  }, [gameId]);
+
   const isLobbyPlayer = Boolean(userId && game?.players?.includes(userId));
+
+  useEffect(() => {
+    if (!game || !game.passcodeHash) return;
+    const isPrivateLobby = (game.visibility ?? 'public') === 'private';
+    if (!isPrivateLobby || !(game.hasPasscode ?? false)) return;
+    if (!isLobbyPlayer) return;
+    if (cachedAccessHash === game.passcodeHash) return;
+    rememberLobbyAccess(gameId, game.passcodeHash);
+    setCachedAccessHash(game.passcodeHash);
+  }, [cachedAccessHash, game, gameId, isLobbyPlayer]);
 
   useEffect(() => {
     if (!db || !userId || !gameId || !isLobbyPlayer) return;
@@ -285,10 +308,17 @@ export default function LobbyPage() {
       }
 
       const gameData = docSnap.data() as GameDocument;
+      const passProtected = (gameData.hasPasscode ?? false) && Boolean(gameData.passcodeHash);
+      const cachedMatch = Boolean(passProtected && gameData.passcodeHash && cachedAccessHash && cachedAccessHash === gameData.passcodeHash);
       setGame(gameData);
 
       const players = gameData.players ?? [];
       const isPlayer = players.includes(userId);
+
+      if (passProtected && !isPlayer && !cachedMatch) {
+        setLoading(false);
+        return;
+      }
 
       if (!isPlayer && gameData.status === 'waiting' && players.length < 2) {
         try {
@@ -326,7 +356,7 @@ export default function LobbyPage() {
     });
 
     return () => unsubscribe();
-  }, [db, gameId, router, toast, userId]);
+  }, [cachedAccessHash, db, gameId, router, toast, userId]);
 
   useEffect(() => {
     if (!game?.lobbyClosesAt) {
@@ -383,6 +413,34 @@ export default function LobbyPage() {
     router.push('/');
   }, [router]);
 
+  const handleVerifyPasscode = useCallback(async () => {
+    if (!game?.passcodeHash) {
+      setPasscodeError('This lobby no longer accepts new players.');
+      return;
+    }
+    if (!passcodeInput.trim()) {
+      setPasscodeError('Enter the passcode first.');
+      return;
+    }
+    setIsVerifyingPasscode(true);
+    setPasscodeError(null);
+    try {
+      const hashed = await hashToHex(passcodeInput.trim());
+      if (hashed !== game.passcodeHash) {
+        setPasscodeError('That passcode does not match.');
+        return;
+      }
+      rememberLobbyAccess(gameId, hashed);
+      setCachedAccessHash(hashed);
+      setPasscodeInput('');
+    } catch (error) {
+      console.error('Failed to verify lobby passcode', error);
+      setPasscodeError('Unable to verify passcode. Try again.');
+    } finally {
+      setIsVerifyingPasscode(false);
+    }
+  }, [game?.passcodeHash, gameId, passcodeInput]);
+
   const trackedPlayerIds = game?.players ?? [];
   const { getPlayerName } = usePlayerNames({ db, playerIds: trackedPlayerIds });
 
@@ -436,6 +494,11 @@ export default function LobbyPage() {
     { label: 'Lobby grace', value: lobbyCountdown ?? '∞', icon: AlertTriangle, accent: 'amber' as const },
   ];
 
+  const isPrivateLobby = (game.visibility ?? 'public') === 'private';
+  const hasPassRequirement = isPrivateLobby && (game.hasPasscode ?? false) && Boolean(game.passcodeHash);
+  const cachedPasscodeMatch = Boolean(hasPassRequirement && game.passcodeHash && cachedAccessHash === game.passcodeHash);
+  const showPasscodeGate = hasPassRequirement && !isLobbyPlayer && !cachedPasscodeMatch;
+
   return (
     <div
       className={cn(
@@ -443,6 +506,48 @@ export default function LobbyPage() {
         isDarkTheme ? 'bg-[#04050a] text-white' : 'bg-gradient-to-b from-[#fdfbff] via-[#eef3ff] to-[#dce8ff] text-slate-900'
       )}
     >
+      {showPasscodeGate && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 px-4">
+          <motion.form
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3, ease: 'easeOut' }}
+            className="w-full max-w-md space-y-4 rounded-3xl border border-white/10 bg-white/10 p-6 text-white backdrop-blur-2xl"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void handleVerifyPasscode();
+            }}
+          >
+            <p className="text-xs uppercase tracking-[0.25em] text-white/60 sm:tracking-[0.4em]">Private lobby</p>
+            <h2 className="text-2xl font-black">Enter the passcode to join</h2>
+            <p className="text-sm text-white/70">
+              The host locked this room. Share the passcode privately and enter it below to continue.
+            </p>
+            <Input
+              value={passcodeInput}
+              onChange={(event) => setPasscodeInput(event.target.value)}
+              placeholder="Passcode"
+              disabled={isVerifyingPasscode}
+              className="border-white/30 bg-white/10 text-base text-white placeholder:text-white/40"
+            />
+            {passcodeError && <p className="text-sm text-rose-300">{passcodeError}</p>}
+            <div className="flex flex-wrap gap-3">
+              <Button type="submit" disabled={isVerifyingPasscode} className="flex-1 rounded-2xl bg-white text-slate-900">
+                {isVerifyingPasscode ? 'Checking…' : 'Unlock lobby'}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={handleReturnHome}
+                className="flex-1 rounded-2xl border border-white/20 bg-transparent text-white hover:bg-white/10"
+              >
+                Back home
+              </Button>
+            </div>
+          </motion.form>
+        </div>
+      )}
+
       <div className="pointer-events-none absolute inset-0 opacity-75">
         <div
           className={cn(
@@ -459,31 +564,44 @@ export default function LobbyPage() {
       </div>
 
       <div className="relative z-10 mx-auto flex w-full max-w-6xl flex-col gap-10">
+        <div className="flex flex-col items-center gap-4 text-center sm:flex-row sm:items-center sm:justify-between sm:text-left">
+          <div className="flex items-center justify-center">
+            <Logo />
+          </div>
+          <p
+            className={cn(
+              'text-sm leading-relaxed',
+              isDarkTheme ? 'text-white/75' : 'text-slate-600'
+            )}
+          >
+            Track invites, timers, and ready players from any device.
+          </p>
+        </div>
 
         <motion.section
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.35 }}
           className={cn(
-            'space-y-8 rounded-[32px] border p-6 shadow-[0_35px_80px_rgba(0,0,0,0.15)] backdrop-blur-lg sm:p-10',
-            isDarkTheme ? 'border-white/10 bg-white/[0.04]' : 'border-slate-200/80 bg-white/95 shadow-[0_35px_90px_rgba(15,23,42,0.15)]'
+            'space-y-8 rounded-[32px] border p-5 shadow-[0_35px_80px_rgba(0,0,0,0.15)] backdrop-blur-lg sm:p-10',
+            isDarkTheme ? 'border-white/10 bg-white/[0.04]' : 'pale-orange-shell text-slate-900'
           )}
         >
           <div className="grid gap-8 lg:grid-cols-[1.2fr_0.8fr]">
             <div className="space-y-6">
               <div
                 className={cn(
-                  'rounded-[28px] px-5 py-4 text-sm shadow-inner',
+                  'rounded-[28px] px-5 py-4 text-sm',
                   isDarkTheme
-                    ? 'border-white/15 bg-black/20 text-white'
-                    : 'border-slate-200 bg-white text-slate-700 shadow-[inset_0_1px_0_rgba(148,163,184,0.35)]'
+                    ? 'border border-white/15 bg-black/20 text-white shadow-[inset_6px_6px_20px_rgba(0,0,0,0.6),inset_-4px_-4px_12px_rgba(255,255,255,0.08)]'
+                    : 'glass-panel-strong text-slate-800'
                 )}
               >
                 <div className="flex flex-wrap items-center gap-4">
                   <div className="min-w-0">
                     <p
                       className={cn(
-                        'text-[0.55rem] uppercase tracking-[0.5em]',
+                        'text-[0.55rem] uppercase tracking-[0.3em] sm:tracking-[0.5em]',
                         isDarkTheme ? 'text-white/60' : 'text-slate-500'
                       )}
                     >
@@ -499,7 +617,7 @@ export default function LobbyPage() {
                   <div className="min-w-0">
                     <p
                       className={cn(
-                        'text-[0.55rem] uppercase tracking-[0.5em]',
+                        'text-[0.55rem] uppercase tracking-[0.3em] sm:tracking-[0.5em]',
                         isDarkTheme ? 'text-white/60' : 'text-slate-500'
                       )}
                     >
@@ -519,8 +637,8 @@ export default function LobbyPage() {
                 <ModeBadge game={game} isDark={isDarkTheme} />
                 <span
                   className={cn(
-                    'inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.35em]',
-                    isDarkTheme ? 'border-white/10 text-white/80' : 'border-slate-200 bg-white text-slate-600'
+                    'inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] sm:tracking-[0.35em]',
+                    isDarkTheme ? 'border-white/10 text-white/80' : 'border-white/70 bg-white/70 text-slate-700'
                   )}
                 >
                   <Users className="h-4 w-4" />
@@ -554,7 +672,7 @@ export default function LobbyPage() {
                 type="button"
                 onClick={handleReturnHome}
                 className={cn(
-                  'w-full rounded-2xl border px-5 py-3 text-xs font-semibold uppercase tracking-[0.4em] transition-colors',
+                  'w-full rounded-2xl border px-5 py-3 text-xs font-semibold uppercase tracking-[0.25em] transition-colors sm:tracking-[0.4em]',
                   isDarkTheme
                     ? 'border-white/20 bg-white/5 text-white hover:bg-white/10'
                     : 'border-slate-300 bg-white text-slate-700 shadow-sm hover:bg-slate-50'
@@ -565,20 +683,27 @@ export default function LobbyPage() {
 
               <div
                 className={cn(
-                  'rounded-3xl border px-5 py-4',
-                  isDarkTheme ? 'border-white/10 bg-white/[0.02]' : 'border-slate-200 bg-white'
+                  'rounded-3xl px-5 py-4',
+                  isDarkTheme
+                    ? 'border border-white/10 bg-white/[0.02] shadow-[inset_6px_6px_18px_rgba(0,0,0,0.55),inset_-4px_-4px_12px_rgba(255,255,255,0.05)]'
+                    : 'glass-panel-soft text-slate-900'
                 )}
               >
-                <p className={cn('text-xs font-semibold uppercase tracking-[0.4em]', isDarkTheme ? 'text-white/60' : 'text-slate-500')}>
+                <p
+                  className={cn(
+                    'text-xs font-semibold uppercase tracking-[0.25em] sm:tracking-[0.4em]',
+                    isDarkTheme ? 'text-white/60' : 'text-slate-500'
+                  )}
+                >
                   Invite link
                 </p>
                 <div className="mt-3 flex flex-col gap-3 sm:flex-row">
                   <div
                     className={cn(
-                      'flex flex-1 items-center gap-2 rounded-2xl border px-4 py-3 text-sm font-mono',
+                      'flex flex-1 items-center gap-2 rounded-2xl px-4 py-3 text-sm font-mono',
                       isDarkTheme
-                        ? 'border-white/10 bg-black/20 text-white/80'
-                        : 'border-slate-200 bg-slate-50 text-slate-700'
+                        ? 'border border-white/10 bg-black/20 text-white/80'
+                        : 'glass-panel-soft text-slate-800'
                     )}
                   >
                     <Link2 className="h-4 w-4 shrink-0" />
@@ -587,7 +712,7 @@ export default function LobbyPage() {
                   <Button
                     type="button"
                     onClick={copyToClipboard}
-                    className="rounded-2xl bg-gradient-to-r from-[#ff7a18] to-[#ffb347] text-black shadow-[0_10px_30px_rgba(0,0,0,0.25)]"
+                    className="w-full rounded-2xl bg-gradient-to-r from-[#ff7a18] to-[#ffb347] text-black shadow-[0_10px_30px_rgba(0,0,0,0.25)] sm:w-auto"
                   >
                     {isCopied ? (
                       <span className="inline-flex items-center gap-2 text-sm font-semibold">
@@ -605,15 +730,17 @@ export default function LobbyPage() {
 
             <div
               className={cn(
-                'space-y-5 rounded-[28px] border p-5',
-                isDarkTheme ? 'border-white/10 bg-white/[0.02]' : 'border-slate-200 bg-white'
+                'space-y-5 rounded-[28px] p-5',
+                isDarkTheme
+                  ? 'border border-white/10 bg-white/[0.02] shadow-[inset_6px_6px_18px_rgba(0,0,0,0.5),inset_-4px_-4px_12px_rgba(255,255,255,0.05)]'
+                  : 'glass-panel-soft text-slate-900'
               )}
             >
               <div className="flex items-center justify-between">
                 <div>
                   <p
                     className={cn(
-                      'text-xs uppercase tracking-[0.4em]',
+                      'text-xs uppercase tracking-[0.25em] sm:tracking-[0.4em]',
                       isDarkTheme ? 'text-white/60' : 'text-slate-500'
                     )}
                   >
@@ -623,7 +750,7 @@ export default function LobbyPage() {
                 </div>
                 <span
                   className={cn(
-                    'rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.3em]',
+                    'rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] sm:tracking-[0.3em]',
                     isDarkTheme
                       ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
                       : 'border-emerald-200 bg-emerald-50 text-emerald-700'
@@ -641,10 +768,10 @@ export default function LobbyPage() {
                       <div
                         key={playerId}
                         className={cn(
-                          'flex items-center justify-between rounded-2xl border px-4 py-3',
+                          'flex items-center justify-between rounded-2xl px-4 py-3',
                           isDarkTheme
-                            ? 'border-white/10 bg-gradient-to-r from-white/[0.04] to-transparent'
-                            : 'border-slate-200 bg-white/90 shadow-sm'
+                            ? 'border border-white/10 bg-gradient-to-r from-white/[0.04] to-transparent'
+                            : 'glass-panel-soft text-slate-900'
                         )}
                       >
                         <div>

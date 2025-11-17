@@ -1,5 +1,6 @@
 'use server';
 
+import { createHash } from 'crypto';
 import type { FirebaseOptions } from 'firebase/app';
 import { adminAuth, adminDb } from '@/lib/firebase-admin';
 import { getRandomWord, normalizeWord } from '@/lib/words.server';
@@ -79,12 +80,23 @@ const resolveFirebaseConfig = (incoming: FirebaseOptions): FirebaseOptions => {
   return resolvedConfig;
 };
 
+const hashPasscode = (value: string) => createHash('sha256').update(value).digest('hex');
+
+const normalizeVisibility = (value: unknown): 'public' | 'private' =>
+  value === 'private' ? 'private' : 'public';
+
 export async function createGame(
   settings: any,
   firebaseConfig: FirebaseOptions,
   authToken?: string
 ) {
-  const { creatorId, ...gameSettings } = settings;
+  const {
+    creatorId,
+    creatorDisplayName: incomingCreatorDisplayName,
+    visibility: incomingVisibility,
+    passcode: incomingPasscode,
+    ...gameSettings
+  } = settings ?? {};
 
   if (!creatorId) {
     throw new Error("Creator ID is missing. The client must provide the user's UID.");
@@ -120,6 +132,19 @@ export async function createGame(
       throw new Error('Creator ID mismatch with authenticated user.');
     }
 
+    const lobbyVisibility = normalizeVisibility(incomingVisibility);
+    const normalizedPasscode = typeof incomingPasscode === 'string' ? incomingPasscode.trim() : '';
+
+    if (lobbyVisibility === 'private' && !normalizedPasscode) {
+      throw new Error('Private lobbies require a passcode.');
+    }
+
+    const passcodeHash = lobbyVisibility === 'private' ? hashPasscode(normalizedPasscode) : null;
+    const creatorDisplayName = typeof incomingCreatorDisplayName === 'string'
+      ? incomingCreatorDisplayName.trim()
+      : '';
+    const hasPasscode = Boolean(passcodeHash);
+
     const gameId = generateGameId();
 
     const wordLength = typeof gameSettings.wordLength === 'number' ? gameSettings.wordLength : 5;
@@ -137,6 +162,10 @@ export async function createGame(
       ...gameSettings,
       wordLength: normalizedLength,
       creatorId,
+  creatorDisplayName: creatorDisplayName || null,
+      visibility: lobbyVisibility,
+      hasPasscode,
+      passcodeHash,
       status: initialStatus,
       players: [creatorId],
       activePlayers: [creatorId],
