@@ -32,6 +32,8 @@ function addMinutes(baseIso: string, minutes: number | null): string | null {
 }
 
 const shouldUseEmulators = process.env.NEXT_PUBLIC_FIREBASE_USE_EMULATORS === 'true';
+const WAITING_MINUTES = 10;
+const MATCH_HARD_STOP_MINUTES = 30;
 
 const requiredFirebaseKeys: Array<keyof FirebaseOptions> = [
   'apiKey',
@@ -158,6 +160,9 @@ export async function createGame(
     const initialMatchDeadline = initialStatus === 'in_progress' && matchMinutes
       ? addMinutes(createdAt, matchMinutes)
       : null;
+    const initialHardStop = initialStatus === 'in_progress'
+      ? addMinutes(createdAt, MATCH_HARD_STOP_MINUTES)
+      : null;
     const initialGameData = {
       ...gameSettings,
       wordLength: normalizedLength,
@@ -169,6 +174,7 @@ export async function createGame(
       status: initialStatus,
       players: [creatorId],
       activePlayers: [creatorId],
+  playerAliases: creatorDisplayName ? { [creatorId]: creatorDisplayName } : {},
       turnOrder: [],
       currentTurnPlayerId: null,
       createdAt,
@@ -179,9 +185,10 @@ export async function createGame(
       endVotes: [],
       completionMessage: null,
       endedBy: null,
-      lobbyClosesAt: null,
-      lastActivityAt: createdAt,
-      inactivityClosesAt: initialStatus === 'in_progress' ? addMinutes(createdAt, 30) : null,
+  lobbyClosesAt: null,
+  lastActivityAt: createdAt,
+  inactivityClosesAt: initialStatus === 'waiting' ? addMinutes(createdAt, WAITING_MINUTES) : null,
+  matchHardStopAt: initialHardStop,
       matchDeadline: initialMatchDeadline,
       turnDeadline: null,
       completedAt: null,

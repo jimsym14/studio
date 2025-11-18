@@ -38,8 +38,14 @@ const isLobbyFresh = (lobby: LobbyWithId, cutoffMs: number) => {
   return typeof lastActivity === 'number' && lastActivity >= cutoffMs;
 };
 
-const hasWaitingOccupants = (lobby: LobbyWithId) =>
-  (lobby.activePlayers?.length ?? lobby.players?.length ?? 0) > 0;
+const countIds = (ids?: string[] | null) =>
+  Array.isArray(ids) ? ids.filter((id): id is string => Boolean(id)).length : 0;
+
+const hasWaitingOccupants = (lobby: LobbyWithId) => {
+  const activeCount = countIds(lobby.activePlayers);
+  const rosterCount = countIds(lobby.players);
+  return activeCount > 0 || rosterCount > 0;
+};
 
 const fallbackHostLabel = (creatorId?: string | null) => {
   if (!creatorId) return 'Unknown player';
@@ -100,32 +106,43 @@ export default function LobbyBrowserPage() {
 
   const activityCutoff = nowMs - STALE_THRESHOLD_MS;
 
-  const activeLobbies = useMemo(
-    () => lobbies.filter((lobby) => isLobbyFresh(lobby, activityCutoff) && hasWaitingOccupants(lobby)),
-    [lobbies, activityCutoff]
+  const waitingLobbies = useMemo(
+    () => lobbies.filter((lobby) => lobby.status === 'waiting'),
+    [lobbies]
   );
 
-  const joinableLobbies = useMemo(
-    () => activeLobbies.filter((lobby) => lobby.status === 'waiting'),
-    [activeLobbies]
+  const visibleWaitingLobbies = useMemo(
+    () => waitingLobbies.filter(hasWaitingOccupants),
+    [waitingLobbies]
   );
 
-  const creatorIds = useMemo(() => joinableLobbies.map((lobby) => lobby.creatorId), [joinableLobbies]);
+  const staleLobbyIds = useMemo(() => {
+    return new Set(
+      visibleWaitingLobbies.filter((lobby) => !isLobbyFresh(lobby, activityCutoff)).map((lobby) => lobby.id)
+    );
+  }, [visibleWaitingLobbies, activityCutoff]);
+
+  const creatorIds = useMemo(() => visibleWaitingLobbies.map((lobby) => lobby.creatorId), [visibleWaitingLobbies]);
   const { playerNames, getPlayerName } = usePlayerNames({ db, playerIds: creatorIds });
 
   const normalizedSearch = searchTerm.trim().toLowerCase();
 
   const prioritizedLobbies = useMemo(() => {
-    return [...joinableLobbies].sort((a, b) => {
+    return [...visibleWaitingLobbies].sort((a, b) => {
       const aMs = parseIsoToMs(a.lastActivityAt) ?? 0;
       const bMs = parseIsoToMs(b.lastActivityAt) ?? 0;
       return bMs - aMs;
     });
-  }, [joinableLobbies]);
+  }, [visibleWaitingLobbies]);
 
   const resolveHostSearchName = useCallback(
     (lobby: LobbyWithId) => {
-      const candidates = [lobby.creatorDisplayName, playerNames[lobby.creatorId], lobby.creatorId];
+      const candidates = [
+        lobby.creatorDisplayName,
+        lobby.playerAliases?.[lobby.creatorId],
+        playerNames[lobby.creatorId],
+        lobby.creatorId,
+      ];
       for (const value of candidates) {
         if (typeof value === 'string' && value.trim().length) {
           return value.toLowerCase();
@@ -215,10 +232,10 @@ export default function LobbyBrowserPage() {
     }
   };
 
-  const totalActive = activeLobbies.length;
-  const totalWaiting = joinableLobbies.length;
-  const totalPrivate = joinableLobbies.filter((lobby) => (lobby.visibility ?? 'public') === 'private').length;
-  const showLoadingState = loading;
+  const totalActive = lobbies.filter((lobby) => isLobbyFresh(lobby, activityCutoff)).length;
+  const totalWaiting = visibleWaitingLobbies.length;
+  const totalPrivate = visibleWaitingLobbies.filter((lobby) => (lobby.visibility ?? 'public') === 'private').length;
+  const showLoadingState = loading && !lobbies.length;
 
   const overviewMetrics = [
     {
@@ -418,11 +435,13 @@ export default function LobbyBrowserPage() {
                     const lobbyMode = deriveLobbyMode(lobby);
                     const hostName =
                       lobby.creatorDisplayName?.trim() ||
+                      lobby.playerAliases?.[lobby.creatorId]?.trim() ||
                       getPlayerName(lobby.creatorId) ||
                       fallbackHostLabel(lobby.creatorId);
                     const playersCount = lobby.players?.length ?? 0;
                     const activeCount = lobby.activePlayers?.length ?? 0;
                     const isExpanded = expandedPrivateId === lobby.id;
+                    const isStale = staleLobbyIds.has(lobby.id);
 
                     const containerClasses = cn(
                       'rounded-2xl border px-4 py-3 shadow-[0_12px_25px_rgba(0,0,0,0.15)] focus-within:ring-2 focus-within:ring-offset-2 transition',
@@ -467,6 +486,18 @@ export default function LobbyBrowserPage() {
                                 >
                                   {lobbyMode === 'co-op' ? 'Co-op' : 'PvP'}
                                 </span>
+                                {isStale && (
+                                  <span
+                                    className={cn(
+                                      'rounded-full px-2 py-0.5 text-[0.65rem] font-semibold',
+                                      isPrivateLobby
+                                        ? 'bg-white/15 text-white/80'
+                                        : 'bg-amber-100 text-amber-700 dark:bg-amber-400/20 dark:text-amber-100'
+                                    )}
+                                  >
+                                    Idle 10m+
+                                  </span>
+                                )}
                               </div>
                             </div>
                             <div className="text-right text-xs">

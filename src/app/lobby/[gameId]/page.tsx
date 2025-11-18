@@ -22,7 +22,7 @@ import {
   WifiOff,
   type LucideIcon,
 } from 'lucide-react';
-import { arrayUnion, doc, onSnapshot, runTransaction, updateDoc } from 'firebase/firestore';
+import { arrayUnion, deleteDoc, doc, onSnapshot, runTransaction, updateDoc } from 'firebase/firestore';
 
 import { useFirebase } from '@/components/firebase-provider';
 import { Button } from '@/components/ui/button';
@@ -37,8 +37,9 @@ import { hashToHex } from '@/lib/hash-client';
 import { readLobbyAccess, rememberLobbyAccess } from '@/lib/lobby-access';
 import { readLobbyPasscode, rememberLobbyPasscode } from '@/lib/lobby-passcode';
 
-const LOBBY_GRACE_MINUTES = 3;
-const INACTIVITY_MINUTES = 30;
+const LOBBY_GRACE_MINUTES = 2;
+const WAITING_FOR_PLAYER_MINUTES = 10;
+const MATCH_HARD_STOP_MINUTES = 30;
 
 const addMinutesIso = (iso: string, minutes: number | null) => {
   if (!minutes) return null;
@@ -91,6 +92,19 @@ const formatTurnSettingLabel = (value?: string | null) => {
 const abbreviateId = (value: string) => {
   if (value.length <= 8) return value.toUpperCase();
   return `${value.slice(0, 4)}…${value.slice(-3)}`.toUpperCase();
+};
+
+const rotateOrderToPlayer = (order: string[], firstPlayerId: string | null) => {
+  if (!order.length || !firstPlayerId) return order;
+  const index = order.indexOf(firstPlayerId);
+  if (index <= 0) return order;
+  return [...order.slice(index), ...order.slice(0, index)];
+};
+
+const pickRandomPlayerId = (players: string[]) => {
+  if (!players.length) return null;
+  const index = Math.floor(Math.random() * players.length);
+  return players[index] ?? null;
 };
 
 const ModeBadge = ({ game, isDark }: { game: GameDocument | null; isDark: boolean }) => {
@@ -233,6 +247,14 @@ export default function LobbyPage() {
   const isLobbyPlayer = Boolean(userId && game?.players?.includes(userId));
 
   useEffect(() => {
+    if (!db || !gameId || !userId || !profile?.username) return;
+    if (!isLobbyPlayer) return;
+    if (game?.playerAliases?.[userId] === profile.username) return;
+    const gameRef = doc(db, 'games', gameId);
+    void updateDoc(gameRef, { [`playerAliases.${userId}`]: profile.username });
+  }, [db, game?.playerAliases, gameId, isLobbyPlayer, profile?.username, userId]);
+
+  useEffect(() => {
     if (!game || !game.passcodeHash) return;
     const isPrivateLobby = (game.visibility ?? 'public') === 'private';
     if (!isPrivateLobby || !(game.hasPasscode ?? false)) return;
@@ -255,11 +277,12 @@ export default function LobbyPage() {
           const activePlayers = new Set(data.activePlayers ?? []);
           activePlayers.add(userId);
           const nowIso = new Date().toISOString();
+          const waitingForOpponent = (data.status ?? 'waiting') === 'waiting' && (data.players?.length ?? 0) < 2;
           const updatePayload: Partial<GameDocument> & Record<string, unknown> = {
             activePlayers: Array.from(activePlayers),
             lastActivityAt: nowIso,
             lobbyClosesAt: null,
-            inactivityClosesAt: addMinutesIso(nowIso, INACTIVITY_MINUTES),
+            inactivityClosesAt: waitingForOpponent ? addMinutesIso(nowIso, WAITING_FOR_PLAYER_MINUTES) : null,
           };
           transaction.update(gameRef, updatePayload);
         });
@@ -275,8 +298,11 @@ export default function LobbyPage() {
           if (!snapshot.exists()) return;
           const data = snapshot.data() as GameDocument;
           const filtered = (data.activePlayers ?? []).filter((id) => id !== userId);
+          const playerCount = data.players?.length ?? 0;
+          const waitingForOpponent = (data.status ?? 'waiting') === 'waiting' && playerCount > 0 && playerCount < 2;
           const updatePayload: Partial<GameDocument> & Record<string, unknown> = {
             activePlayers: filtered,
+            inactivityClosesAt: waitingForOpponent ? addMinutesIso(new Date().toISOString(), WAITING_FOR_PLAYER_MINUTES) : null,
           };
           if (!filtered.length) {
             const nowIso = new Date().toISOString();
@@ -304,86 +330,138 @@ export default function LobbyPage() {
   }, [db, gameId, userId, isLobbyPlayer]);
 
   useEffect(() => {
-    if (!gameId || !userId || !db) return;
+    if (!gameId || !db) return;
     const gameRef = doc(db, 'games', gameId);
 
-    const unsubscribe = onSnapshot(gameRef, async (docSnap) => {
-      if (!docSnap.exists()) {
-        toast({ variant: 'destructive', title: 'Game not found', description: 'The lobby may have expired.' });
-        router.push('/');
-        return;
-      }
-
-      const gameData = docSnap.data() as GameDocument;
-      const rawPlayers = Array.isArray(gameData.players) ? gameData.players : [];
-      const normalizedPlayers = Array.from(
-        new Set(rawPlayers.filter((id): id is string => typeof id === 'string' && id.length > 0))
-      );
-      const nextGameData =
-        normalizedPlayers.length === rawPlayers.length ? gameData : { ...gameData, players: normalizedPlayers };
-
-      if (normalizedPlayers.length !== rawPlayers.length) {
-        try {
-          await updateDoc(gameRef, { players: normalizedPlayers });
-        } catch (error) {
-          console.error('Failed to normalize lobby roster', error);
+    const unsubscribe = onSnapshot(
+      gameRef,
+      async (docSnap) => {
+        if (!docSnap.exists()) {
+          toast({ variant: 'destructive', title: 'Game not found', description: 'The lobby may have expired.' });
+          router.push('/');
+          return;
         }
-      }
 
-      const passProtected = (nextGameData.hasPasscode ?? false) && Boolean(nextGameData.passcodeHash);
-      const cachedMatch = Boolean(
-        passProtected && nextGameData.passcodeHash && cachedAccessHash && cachedAccessHash === nextGameData.passcodeHash
-      );
-      setGame(nextGameData);
+        const gameData = docSnap.data() as GameDocument;
+        const rawPlayers = Array.isArray(gameData.players) ? gameData.players : [];
+        const normalizedPlayers = Array.from(
+          new Set(rawPlayers.filter((id): id is string => typeof id === 'string' && id.length > 0))
+        );
+        const nextGameData =
+          normalizedPlayers.length === rawPlayers.length ? gameData : { ...gameData, players: normalizedPlayers };
 
-      const players = nextGameData.players ?? [];
-      const isPlayer = players.includes(userId);
+        if (normalizedPlayers.length !== rawPlayers.length) {
+          try {
+            await updateDoc(gameRef, { players: normalizedPlayers });
+          } catch (error) {
+            console.error('Failed to normalize lobby roster', error);
+          }
+        }
 
-      if (passProtected && !isPlayer && !cachedMatch) {
+        const passProtected = (nextGameData.hasPasscode ?? false) && Boolean(nextGameData.passcodeHash);
+        const cachedMatch = Boolean(
+          passProtected && nextGameData.passcodeHash && cachedAccessHash && cachedAccessHash === nextGameData.passcodeHash
+        );
+
+        setGame(nextGameData);
+
+        const players = nextGameData.players ?? [];
+        const isPlayer = Boolean(userId && players.includes(userId));
+
+        if (passProtected && !isPlayer && !cachedMatch) {
+          setLoading(false);
+          return;
+        }
+
+        if (!userId) {
+          setLoading(false);
+          return;
+        }
+
+        if (!isPlayer && nextGameData.status === 'waiting' && players.length < 2) {
+          try {
+            const nowIso = new Date().toISOString();
+            const nextCount = players.includes(userId) ? players.length : players.length + 1;
+            await updateDoc(gameRef, {
+              players: arrayUnion(userId),
+              activePlayers: arrayUnion(userId),
+              lastActivityAt: nowIso,
+              lobbyClosesAt: null,
+              inactivityClosesAt:
+                nextCount < 2 ? addMinutesIso(nowIso, WAITING_FOR_PLAYER_MINUTES) : null,
+            });
+          } catch (error) {
+            console.error('Failed to auto-join lobby', error);
+          }
+        }
+
+  const activePlayersCount = (nextGameData.activePlayers ?? []).filter((id) => Boolean(id)).length;
+  const readyPlayers = players.filter((id): id is string => Boolean(id));
+
+  if (nextGameData.status === 'waiting' && readyPlayers.length >= 2 && activePlayersCount >= 2) {
+          try {
+            await runTransaction(db, async (transaction) => {
+              const freshSnapshot = await transaction.get(gameRef);
+              if (!freshSnapshot.exists()) return;
+              const freshData = freshSnapshot.data() as GameDocument;
+              if (freshData.status !== 'waiting') return;
+
+              const roster = Array.from(
+                new Set((freshData.players ?? []).filter((id): id is string => Boolean(id)))
+              );
+              if (roster.length < 2) return;
+
+              const baseOrder = (freshData.turnOrder ?? []).length
+                ? (freshData.turnOrder ?? []).filter((id): id is string => Boolean(id))
+                : roster;
+              const existingTurnPlayer = freshData.currentTurnPlayerId && roster.includes(freshData.currentTurnPlayerId)
+                ? freshData.currentTurnPlayerId
+                : null;
+              const chosenTurnPlayer = existingTurnPlayer ?? pickRandomPlayerId(roster);
+              const rotatedOrder = !freshData.turnOrder?.length
+                ? rotateOrderToPlayer(baseOrder, chosenTurnPlayer)
+                : baseOrder;
+
+              const updatePayload: Partial<GameDocument> & Record<string, unknown> = {
+                status: 'in_progress',
+                inactivityClosesAt: null,
+                matchHardStopAt:
+                  freshData.matchHardStopAt ?? addMinutesIso(new Date().toISOString(), MATCH_HARD_STOP_MINUTES),
+              };
+
+              if (!freshData.turnOrder?.length && rotatedOrder.length) {
+                updatePayload.turnOrder = rotatedOrder;
+              }
+              if (chosenTurnPlayer) {
+                updatePayload.currentTurnPlayerId = chosenTurnPlayer;
+              }
+
+              transaction.update(gameRef, updatePayload);
+            });
+            toast({ title: 'Players ready', description: 'Launching the board…' });
+          } catch (error) {
+            console.error('Failed to start match from lobby', error);
+          }
+        }
+
+        if (nextGameData.status === 'in_progress' && isPlayer) {
+          router.push(`/game/${gameId}`);
+        }
+
         setLoading(false);
-        return;
+      },
+      (error) => {
+        console.error('Failed to load lobby', error);
+        toast({ variant: 'destructive', title: 'Lobby unavailable', description: 'Η σελίδα λόμπι δεν φορτώθηκε.' });
+        router.push('/');
       }
-
-      if (!isPlayer && nextGameData.status === 'waiting' && players.length < 2) {
-        try {
-          const nowIso = new Date().toISOString();
-          await updateDoc(gameRef, {
-            players: arrayUnion(userId),
-            activePlayers: arrayUnion(userId),
-            lastActivityAt: nowIso,
-            lobbyClosesAt: null,
-            inactivityClosesAt: addMinutesIso(nowIso, INACTIVITY_MINUTES),
-          });
-        } catch (error) {
-          console.error('Failed to auto-join lobby', error);
-        }
-      }
-
-      if (
-        nextGameData.status === 'waiting' &&
-        players.length >= 2 &&
-        (nextGameData.activePlayers?.length ?? 0) >= 2
-      ) {
-        try {
-          await updateDoc(gameRef, { status: 'in_progress' });
-          toast({ title: 'Players ready', description: 'Launching the board…' });
-        } catch (error) {
-          console.error('Failed to start match from lobby', error);
-        }
-      }
-
-      if (nextGameData.status === 'in_progress') {
-        router.push(`/game/${gameId}`);
-      }
-
-      setLoading(false);
-    });
+    );
 
     return () => unsubscribe();
   }, [cachedAccessHash, db, gameId, router, toast, userId]);
 
   useEffect(() => {
-    if (!game?.lobbyClosesAt) {
+    if (!db || !game?.lobbyClosesAt) {
       lobbyCloseAlertedRef.current = false;
       return;
     }
@@ -392,13 +470,35 @@ export default function LobbyPage() {
     if (Number.isNaN(deadline)) return;
     if (deadline <= now) {
       lobbyCloseAlertedRef.current = true;
-      toast({ variant: 'destructive', title: 'Lobby closed', description: 'Nobody reconnected during the grace period.' });
-      router.push('/');
+      void (async () => {
+        try {
+          const gameRef = doc(db, 'games', gameId);
+          if (game.status === 'waiting') {
+            await deleteDoc(gameRef);
+            toast({
+              variant: 'destructive',
+              title: 'Lobby deleted',
+              description: 'It sat empty for too long.',
+            });
+          } else {
+            await updateDoc(gameRef, {
+              status: 'completed',
+              completedAt: new Date().toISOString(),
+              completionMessage: 'Match ended after both players disconnected.',
+            });
+            toast({ variant: 'destructive', title: 'Match closed', description: 'Nobody rejoined in time.' });
+          }
+        } catch (error) {
+          console.error('Failed to close lobby', error);
+        } finally {
+          router.push('/');
+        }
+      })();
     }
-  }, [game?.lobbyClosesAt, now, router, toast]);
+  }, [db, game?.lobbyClosesAt, game?.status, gameId, now, router, toast]);
 
   useEffect(() => {
-    if (!game?.inactivityClosesAt) {
+    if (!db || !game?.inactivityClosesAt) {
       inactivityAlertedRef.current = false;
       return;
     }
@@ -407,14 +507,22 @@ export default function LobbyPage() {
     if (Number.isNaN(deadline)) return;
     if (deadline <= now) {
       inactivityAlertedRef.current = true;
-      toast({
-        variant: 'destructive',
-        title: 'Lobby expired',
-        description: 'Create a new lobby when you are ready to play again.',
-      });
-      router.push('/');
+      void (async () => {
+        try {
+          await deleteDoc(doc(db, 'games', gameId));
+          toast({
+            variant: 'destructive',
+            title: 'Lobby expired',
+            description: 'No opponent joined in time.',
+          });
+        } catch (error) {
+          console.error('Failed to delete idle lobby', error);
+        } finally {
+          router.push('/');
+        }
+      })();
     }
-  }, [game?.inactivityClosesAt, now, router, toast]);
+  }, [db, game?.inactivityClosesAt, gameId, now, router, toast]);
 
   const copyToClipboard = useCallback(async () => {
     if (!inviteLink) return;
@@ -525,12 +633,16 @@ export default function LobbyPage() {
     return 'Both players connected. Starting soon!';
   })();
 
-  const resolvePlayerName = (playerId?: string | null) => {
-    if (!playerId) return null;
+  const resolvePlayerName = (playerId?: string | null, fallback = 'Player') => {
+    if (!playerId) return fallback;
+    const alias = game.playerAliases?.[playerId]?.trim();
     if (playerId === userId) {
-      return profile?.username ?? getPlayerName(playerId) ?? 'You';
+      return profile?.username ?? alias ?? getPlayerName(playerId) ?? 'You';
     }
-    return getPlayerName(playerId) ?? `Player ${playerId.slice(-4).toUpperCase()}`;
+    if (alias) return alias;
+    const resolved = getPlayerName(playerId);
+    if (resolved) return resolved;
+    return fallback;
   };
 
   const currentUserDisplayName = resolvePlayerName(userId) ?? profile?.username ?? 'You';
@@ -871,7 +983,7 @@ export default function LobbyPage() {
               </div>
 
               <p className={cn('text-xs leading-relaxed', isDarkTheme ? 'text-white/60' : 'text-slate-500')}>
-                Need a moment? Lobbies auto-close after {INACTIVITY_MINUTES} minutes of inactivity. We hold the room for
+                Need a moment? Lobbies auto-close after {WAITING_FOR_PLAYER_MINUTES} minutes of inactivity. We hold the room for
                 {` ${LOBBY_GRACE_MINUTES} `}
                 additional minutes if everyone disconnects.
               </p>

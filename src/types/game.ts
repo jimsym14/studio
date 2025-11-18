@@ -15,6 +15,7 @@ export interface GameDocument {
   status: GameStatus;
   players: string[];
   activePlayers: string[];
+  playerAliases?: Record<string, string>;
   turnOrder?: string[];
   currentTurnPlayerId?: string | null;
   wordLength: number;
@@ -28,6 +29,7 @@ export interface GameDocument {
   lobbyClosesAt: string | null;
   lastActivityAt: string;
   inactivityClosesAt: string | null;
+  matchHardStopAt: string | null;
   matchDeadline: string | null;
   turnDeadline: string | null;
   createdAt: string;

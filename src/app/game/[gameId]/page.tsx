@@ -1,15 +1,6 @@
 'use client';
 
-import {
-  arrayUnion,
-  deleteDoc,
-  doc,
-  onSnapshot,
-  runTransaction,
-  updateDoc,
-  type DocumentData,
-  type DocumentSnapshot,
-} from 'firebase/firestore';
+import { arrayUnion, doc, onSnapshot, runTransaction, updateDoc, type DocumentData, type DocumentSnapshot } from 'firebase/firestore';
 import {
   Clock3,
   Copy,
@@ -52,8 +43,8 @@ const firebaseConfig = {
 };
 
 const keyboardRows = ['qwertyuiop', 'asdfghjkl', 'zxcvbnm'];
-const LOBBY_GRACE_MINUTES = 3;
-const INACTIVITY_MINUTES = 30;
+const MATCH_HARD_STOP_MINUTES = 30;
+const REJOIN_MINUTES = 2;
 const confettiPalette = ['#FF7A18', '#FFB800', '#39D98A', '#23BDEE', '#9960FF'];
 type ConfettiPiece = {
   color: string;
@@ -159,7 +150,7 @@ const getRandomSoloLossMessage = () => {
 export default function GamePage() {
   const params = useParams();
   const router = useRouter();
-  const { db, userId, user } = useFirebase();
+  const { db, userId, user, profile } = useFirebase();
   const { toast } = useToast();
   const { resolvedTheme } = useTheme();
   const isLightMode = resolvedTheme === 'light';
@@ -193,6 +184,8 @@ export default function GamePage() {
   const autoLossTriggeredRef = useRef(false);
   const previousGuessCountRef = useRef(0);
   const initialLoadRef = useRef(true);
+  const rejoinHandleRef = useRef(false);
+  const hardStopHandleRef = useRef(false);
 
   const gameId = params.gameId as string;
   const isPlayer = Boolean(userId && game?.players?.includes(userId));
@@ -226,25 +219,34 @@ export default function GamePage() {
     (game.activePlayers ?? []).forEach((id) => id && ids.add(id));
     (game.turnOrder ?? []).forEach((id) => id && ids.add(id));
     spectatorIds.forEach((id) => id && ids.add(id));
+  Object.keys(game.playerAliases ?? {}).forEach((id) => id && ids.add(id));
     if (game.currentTurnPlayerId) ids.add(game.currentTurnPlayerId);
     if (game.winnerId) ids.add(game.winnerId);
     if (game.endedBy) ids.add(game.endedBy);
     return Array.from(ids);
   }, [game, spectatorIds]);
   const { getPlayerName } = usePlayerNames({ db, playerIds: trackedPlayerIds });
+  const resolvePlayerAlias = (playerId?: string | null) => {
+    if (!playerId) return undefined;
+    const fromGame = game?.playerAliases?.[playerId]?.trim();
+    if (fromGame) return fromGame;
+    const resolved = getPlayerName(playerId)?.trim();
+    return resolved && resolved.length ? resolved : undefined;
+  };
   const formatPlayerLabel = (playerId?: string | null, fallbackPrefix = 'Player') => {
     if (!playerId) return '—';
-    if (playerId === userId) return 'You';
-    const resolved = getPlayerName(playerId);
-    if (resolved) return resolved;
-    return `${fallbackPrefix} ${playerId.slice(-4).toUpperCase()}`;
+    if (playerId === userId) return profile?.username ?? 'You';
+    const alias = resolvePlayerAlias(playerId);
+    if (alias) return alias;
+    return fallbackPrefix;
   };
   const turnStatusCopy = (() => {
     if (!isMultiplayerGame) return null;
-    if (!hasLockedTurn) return 'Περιμένουμε να ξεκινήσει ο γύρος.';
-    return activeTurnPlayerId === userId
-      ? 'Η σειρά σου!'
-      : `Σειρά: ${formatPlayerLabel(activeTurnPlayerId)}`;
+    if (!hasLockedTurn) {
+      const neededPlayers = (game?.players?.length ?? 0) < 2;
+      return neededPlayers ? 'Waiting for another player…' : 'Choosing who starts…';
+    }
+    return activeTurnPlayerId === userId ? `It's your turn!` : `It's not your turn.`;
   })();
 
   useEffect(() => {
@@ -291,6 +293,14 @@ export default function GamePage() {
   useEffect(() => {
     setRevealedTiles({});
   }, [gameId]);
+
+  useEffect(() => {
+    if (!db || !gameId || !userId || !profile?.username) return;
+    if (!game?.players?.includes(userId)) return;
+    if (game.playerAliases?.[userId] === profile.username) return;
+    const gameRef = doc(db, 'games', gameId);
+    void updateDoc(gameRef, { [`playerAliases.${userId}`]: profile.username });
+  }, [db, game?.playerAliases, game?.players, gameId, profile?.username, userId]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
@@ -371,16 +381,6 @@ export default function GamePage() {
         previousGuessCountRef.current = guessCount;
         initialLoadRef.current = false;
 
-        const lobbyDeadline = data.lobbyClosesAt ? new Date(data.lobbyClosesAt).getTime() : null;
-        if (lobbyDeadline && Date.now() > lobbyDeadline) {
-          deleteDoc(gameRef).catch((error) => console.error('Failed to remove expired lobby', error));
-          toast({
-            variant: 'destructive',
-            title: 'Session closed',
-            description: 'Lobby expired while everyone was away.',
-          });
-          router.push('/');
-        }
       },
       (error: unknown) => {
         console.error('Error loading game', error);
@@ -413,7 +413,6 @@ export default function GamePage() {
             activePlayers: Array.from(activePlayers),
             lobbyClosesAt: null,
             lastActivityAt: nowIso,
-            inactivityClosesAt: addMinutesIso(nowIso, INACTIVITY_MINUTES),
           });
         });
       } catch (error) {
@@ -433,7 +432,7 @@ export default function GamePage() {
           };
           if (!filtered.length) {
             const nowIso = new Date().toISOString();
-            updatePayload.lobbyClosesAt = addMinutesIso(nowIso, LOBBY_GRACE_MINUTES);
+            updatePayload.lobbyClosesAt = addMinutesIso(nowIso, REJOIN_MINUTES);
           }
           transaction.update(gameRef, updatePayload);
         });
@@ -455,6 +454,73 @@ export default function GamePage() {
       void unregisterPresence();
     };
   }, [db, gameId, userId, isPlayer]);
+
+  useEffect(() => {
+    if (!db || !game || !gameId || game.status !== 'in_progress') return;
+    if (game.matchHardStopAt) return;
+    void updateDoc(doc(db, 'games', gameId), {
+      matchHardStopAt: addMinutesIso(new Date().toISOString(), MATCH_HARD_STOP_MINUTES),
+    }).catch((error) => console.error('Failed to seed match hard stop', error));
+  }, [db, game, gameId]);
+
+  useEffect(() => {
+    if (!db || !game?.matchHardStopAt || game.status !== 'in_progress') {
+      hardStopHandleRef.current = false;
+      return;
+    }
+    if (hardStopHandleRef.current) return;
+    const deadline = new Date(game.matchHardStopAt).getTime();
+    if (Number.isNaN(deadline)) return;
+    if (deadline <= now) {
+      hardStopHandleRef.current = true;
+      const finalize = async () => {
+        try {
+          await updateDoc(doc(db, 'games', gameId), {
+            status: 'completed',
+            completedAt: new Date().toISOString(),
+            completionMessage: 'Match ended after 30 minutes.',
+            turnDeadline: null,
+            matchDeadline: null,
+          });
+          toast({ variant: 'destructive', title: 'Match ended', description: 'Time limit reached.' });
+        } catch (error) {
+          console.error('Failed to enforce hard stop', error);
+        } finally {
+          router.push('/');
+        }
+      };
+      void finalize();
+    }
+  }, [db, game?.matchHardStopAt, game?.status, gameId, now, router, toast]);
+
+  useEffect(() => {
+    if (!db || !game?.lobbyClosesAt || game.status !== 'in_progress') {
+      rejoinHandleRef.current = false;
+      return;
+    }
+    if (rejoinHandleRef.current) return;
+    const deadline = new Date(game.lobbyClosesAt).getTime();
+    if (Number.isNaN(deadline)) return;
+    if (deadline <= now) {
+      rejoinHandleRef.current = true;
+      const handleTimeout = async () => {
+        try {
+          await updateDoc(doc(db, 'games', gameId), {
+            status: 'completed',
+            completedAt: new Date().toISOString(),
+            completionMessage: 'Match closed after everyone left.',
+            lobbyClosesAt: null,
+          });
+          toast({ variant: 'destructive', title: 'Match closed', description: 'Nobody rejoined within 2 minutes.' });
+        } catch (error) {
+          console.error('Failed to close empty match', error);
+        } finally {
+          router.push('/');
+        }
+      };
+      void handleTimeout();
+    }
+  }, [db, game?.lobbyClosesAt, game?.status, gameId, now, router, toast]);
 
   useEffect(() => {
     if (!db || !game || game.status !== 'in_progress') return;
@@ -608,7 +674,6 @@ export default function GamePage() {
       const updatePayload: Record<string, unknown> = {
         guesses: arrayUnion(guessEntry),
         lastActivityAt: guessEntry.submittedAt,
-        inactivityClosesAt: addMinutesIso(guessEntry.submittedAt, INACTIVITY_MINUTES),
         lobbyClosesAt: null,
         endVotes: [],
       };
@@ -1257,6 +1322,7 @@ export default function GamePage() {
                 >
                   {row.split('').map((letter) => {
                     const hint = keyboardHints[letter];
+                    const isAbsentKey = hint === 'absent';
                     const pulseActive = Boolean(keyPulse && keyPulse.letter === letter);
                     const feedbackEntry = keyboardFeedback?.entries.find((entry) => entry.letter === letter);
                     const keyStyle: CSSProperties | undefined = feedbackEntry
@@ -1273,6 +1339,7 @@ export default function GamePage() {
                             ? 'border-transparent text-white dark:text-white'
                             : 'border-white/50 bg-white/35 text-[#2b140c] backdrop-blur dark:border-white/10 dark:bg-white/10 dark:text-white/80',
                           hint && keyboardTone[hint],
+                          isAbsentKey && !isLightMode && 'dark:bg-white/[0.04] dark:text-white/30 dark:border-white/10 dark:opacity-45 dark:hover:opacity-60 dark:hover:-translate-y-0 dark:hover:shadow-none',
                           pulseActive && 'animate-key-pop',
                           feedbackEntry && 'keyboard-feedback',
                           feedbackEntry && `keyboard-feedback-${feedbackEntry.evaluation}`,
@@ -1348,7 +1415,7 @@ export default function GamePage() {
                             : 'text-muted-foreground'
                         )}
                       >
-                        {isCurrentTurnPlayer ? 'Παίζει τώρα' : active ? 'Online' : 'Away'}
+                        {isCurrentTurnPlayer ? 'Taking a turn' : active ? 'Online' : 'Away'}
                       </p>
                     </div>
                     <span

@@ -30,10 +30,10 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const waitingForProfile = Boolean(user && !onLoginRoute && (isProfileLoading || profileMissing));
 
   useEffect(() => {
-    if ((shouldRedirectToLogin || profileMissing) && !onLoginRoute) {
+    if (shouldRedirectToLogin && !onLoginRoute) {
       router.replace('/login');
     }
-  }, [onLoginRoute, profileMissing, router, shouldRedirectToLogin]);
+  }, [onLoginRoute, router, shouldRedirectToLogin]);
 
   if (onLoginRoute) {
     if (!isAuthReady) {
