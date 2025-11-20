@@ -955,7 +955,11 @@ export function ChatDock({
                 position: "fixed",
                 left: Math.min(contextMenu.rect.left, window.innerWidth - 200),
                 top: Math.min(contextMenu.rect.bottom + 8, window.innerHeight - 200),
+                WebkitUserSelect: "none",
+                userSelect: "none",
+                WebkitTouchCallout: "none",
               }}
+              onContextMenu={(e) => e.preventDefault()}
               onClick={(e) => e.stopPropagation()}
             >
               {/* Reactions */}
