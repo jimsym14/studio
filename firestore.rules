@@ -1,0 +1,39 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // --- Helper Functions ---
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isChatMember(chatId) {
+      return isAuthenticated() && 
+             request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.memberIds;
+    }
+
+    // --- Existing Rules (Profiles & Games) ---
+    match /profiles/{uid} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && request.auth.uid == uid;
+    }
+
+    match /games/{gameId} {
+      // Διατηρούμε τον υπάρχοντα κανόνα σου
+      allow read, write: if isAuthenticated(); 
+    }
+
+    // --- New Chat Rules (Live Chat Support) ---
+    match /chats/{chatId} {
+      // Επιτρέπει την ανάγνωση και ενημέρωση (π.χ. read receipts) αν ο χρήστης είναι μέλος
+      allow read, update: if isAuthenticated() && request.auth.uid in resource.data.memberIds;
+      
+      match /messages/{messageId} {
+        // Επιτρέπει την ανάγνωση των μηνυμάτων αν ο χρήστης είναι μέλος του chat
+        allow read: if isChatMember(chatId);
+        // Επιτρέπει τη δημιουργία μηνύματος (αν χρειαστεί client-side send στο μέλλον)
+        allow create: if isChatMember(chatId) && request.resource.data.senderId == request.auth.uid;
+      }
+    }
+  }
+}

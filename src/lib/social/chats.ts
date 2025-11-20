@@ -79,6 +79,7 @@ export const listChatMessages = async (
         sentAt,
         isSystem: Boolean(data.system),
         replyTo: mapReplyPayload(data.replyTo ?? null),
+        reactions: data.reactions || {},
       };
     })
     .reverse();
@@ -106,8 +107,8 @@ export const listChatMessages = async (
     lastMessageAt: chat.lastMessageAt ? chat.lastMessageAt.toDate().toISOString() : null,
     membership: membership
       ? {
-          lastReadAt: membership.lastReadAt ? membership.lastReadAt.toDate().toISOString() : null,
-        }
+        lastReadAt: membership.lastReadAt ? membership.lastReadAt.toDate().toISOString() : null,
+      }
       : null,
     readReceipts,
   };
@@ -317,6 +318,7 @@ export const sendChatMessage = async (
     text: trimmed,
     sentAt: now,
     system: false,
+    clientMessageId: options.clientMessageId ?? null,
   };
   if (replyPayload) {
     payload.replyTo = replyPayload;
@@ -337,10 +339,10 @@ export const sendChatMessage = async (
     clientMessageId: options.clientMessageId ?? null,
     replyTo: replyPayload
       ? {
-          id: replyPayload.messageId,
-          senderId: replyPayload.senderId,
-          text: replyPayload.text,
-        }
+        id: replyPayload.messageId,
+        senderId: replyPayload.senderId,
+        text: replyPayload.text,
+      }
       : undefined,
   };
 
@@ -422,4 +424,42 @@ export const markChatMessagesRead = async (chatId: string, userId: string, lastS
 
   emitChatReadReceipt(chatId, userId, timestamp.toDate().toISOString());
   return { chatId, lastReadAt: timestamp.toDate().toISOString() };
+};
+
+export const toggleChatReaction = async (
+  chatId: string,
+  messageId: string,
+  userId: string,
+  emoji: string
+) => {
+  const chat = await loadChatRecord(chatId);
+  if (!chat) {
+    throw new ApiError(404, 'Chat not found', { code: 'chat_not_found' });
+  }
+  if (!chat.memberIds.includes(userId)) {
+    throw new ApiError(403, 'You are not a member of this chat', { code: 'not_member' });
+  }
+
+  const messageRef = messagesCollection(chatId).doc(messageId);
+  const snapshot = await messageRef.get();
+  if (!snapshot.exists) {
+    throw new ApiError(404, 'Message not found', { code: 'message_not_found' });
+  }
+
+  const data = snapshot.data() ?? {};
+  const currentReactions = (data.reactions as Record<string, string>) || {};
+
+  const updatedReactions = { ...currentReactions };
+
+  if (updatedReactions[userId] === emoji) {
+    delete updatedReactions[userId];
+  } else {
+    updatedReactions[userId] = emoji;
+  }
+
+  await messageRef.update({
+    reactions: updatedReactions,
+  });
+
+  return { chatId, messageId, reactions: updatedReactions };
 };

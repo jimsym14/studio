@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { collection, doc, onSnapshot, query, orderBy, limit, Timestamp } from 'firebase/firestore';
+import { initializeFirebase } from '@/lib/firebase';
 import { useRealtime } from '@/components/realtime-provider';
 import { useFirebase } from '@/components/firebase-provider';
 import { useToast } from '@/hooks/use-toast';
@@ -28,6 +30,18 @@ const buildContextKey = (context: ChatContextDescriptor) => {
 
 const chatIdCache = new Map<string, string>();
 const chatInitPromises = new Map<string, Promise<string>>();
+
+const getMessageKey = (message: { id?: string | null; clientMessageId?: string | null }) => {
+    return message.id ?? message.clientMessageId ?? null;
+};
+
+const normalizeChatMessage = (payload: ChatMessagePayload): ChatMessage => ({
+    ...payload,
+    reactions: payload.reactions || {},
+    sentAt: payload.sentAt ?? undefined,
+    pending: false,
+    failed: false,
+});
 
 const resolveChatId = (cacheKey: string, opener: () => Promise<{ chat: { id?: string; chatId?: string } }>) => {
     if (chatIdCache.has(cacheKey)) {
@@ -67,6 +81,7 @@ export type UseChatRoomOptions = {
 
 export function useChatRoom({ context, enabled = true }: UseChatRoomOptions) {
     const { socket, connected } = useRealtime();
+    const { db } = useMemo(() => initializeFirebase(), []);
     const { userId } = useFirebase();
     const { toast } = useToast();
     const contextKey = useMemo(() => buildContextKey(context), [context]);
@@ -104,6 +119,7 @@ export function useChatRoom({ context, enabled = true }: UseChatRoomOptions) {
     const [lastMessageAt, setLastMessageAt] = useState<Date | null>(null);
     const lastMarkedReadAtRef = useRef(0);
     const refreshInFlightRef = useRef(false);
+    const pendingRefreshRef = useRef(false);
     const prevConnectionRef = useRef<boolean>(false);
 
     const applySnapshot = useCallback((data: {
@@ -112,7 +128,22 @@ export function useChatRoom({ context, enabled = true }: UseChatRoomOptions) {
         membership: { lastReadAt?: string | null } | null;
         lastMessageAt?: string | null;
     }) => {
-        setMessages(data.messages.map(m => ({ ...m, sentAt: m.sentAt ?? undefined, pending: false, failed: false })));
+        setMessages(prev => {
+            const normalized = data.messages.map(normalizeChatMessage);
+            const knownKeys = new Set((normalized.map(entry => getMessageKey(entry)).filter(Boolean)) as string[]);
+            const extras = prev.filter(entry => {
+                const key = getMessageKey(entry);
+                if (!key) return true;
+                return !knownKeys.has(key);
+            });
+            const merged = [...normalized, ...extras];
+            merged.sort((a, b) => {
+                const aTime = a.sentAt ? new Date(a.sentAt).getTime() : 0;
+                const bTime = b.sentAt ? new Date(b.sentAt).getTime() : 0;
+                return aTime - bTime;
+            });
+            return merged;
+        });
 
         const parsedReceipts: Record<string, Date> = {};
         Object.entries(data.readReceipts).forEach(([uid, ts]) => {
@@ -146,14 +177,24 @@ export function useChatRoom({ context, enabled = true }: UseChatRoomOptions) {
     }, [applySnapshot]);
 
     const refreshMessages = useCallback(async () => {
-        if (!chatId || refreshInFlightRef.current) return;
+        if (!chatId) return;
+        if (refreshInFlightRef.current) {
+            pendingRefreshRef.current = true;
+            return;
+        }
         refreshInFlightRef.current = true;
+        pendingRefreshRef.current = false;
         try {
             await fetchMessagesForChatId(chatId);
         } catch (err) {
             console.error('Failed to refresh chat messages', err);
         } finally {
             refreshInFlightRef.current = false;
+            if (pendingRefreshRef.current) {
+                pendingRefreshRef.current = false;
+                // Recursively run the queued refresh so we never miss a server snapshot.
+                void refreshMessages();
+            }
         }
     }, [chatId, fetchMessagesForChatId]);
 
@@ -198,7 +239,7 @@ export function useChatRoom({ context, enabled = true }: UseChatRoomOptions) {
 
     // Socket subscriptions
     useEffect(() => {
-        if (!socket || !connected || !chatId) return;
+        if (!socket || !chatId) return;
 
         let destroyed = false;
         let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -208,68 +249,12 @@ export function useChatRoom({ context, enabled = true }: UseChatRoomOptions) {
             socket.emit('chat:subscribe', { chatId });
         };
 
-        subscribeToChat();
+        if (socket.connected) {
+            subscribeToChat();
+        }
 
-        const handleMessage = (payload: { chatId: string; message: ChatMessagePayload }) => {
-            if (payload.chatId !== chatId) return;
-            const incoming: ChatMessage = {
-                ...payload.message,
-                pending: false,
-                failed: false,
-                sentAt: payload.message.sentAt ?? new Date().toISOString(),
-            };
-            setMessages(prev => {
-                const byId = prev.findIndex(m => m.id === incoming.id);
-                const byClientId = incoming.clientMessageId
-                    ? prev.findIndex(m => m.clientMessageId === incoming.clientMessageId)
-                    : -1;
-                const replaceIndex = byId !== -1 ? byId : byClientId;
-                if (replaceIndex !== -1) {
-                    const next = [...prev];
-                    next[replaceIndex] = { ...prev[replaceIndex], ...incoming, pending: false, failed: false };
-                    return next;
-                }
-                return [...prev, incoming];
-            });
-            if (incoming.sentAt) {
-                const sentAtDate = new Date(incoming.sentAt);
-                setLastMessageAt(sentAtDate);
-                if (incoming.senderId) {
-                    setReadReceipts(prev => ({
-                        ...prev,
-                        [incoming.senderId]: sentAtDate,
-                    }));
-                }
-            }
-            if (payload.message.senderId !== userId) {
-                void refreshMessages();
-            }
-        };
-
-        const handleRead = (payload: { chatId: string; userId: string; lastReadAt: string | null }) => {
-            if (payload.chatId !== chatId) return;
-            setReadReceipts(prev => {
-                if (!payload.lastReadAt) {
-                    const next = { ...prev };
-                    delete next[payload.userId];
-                    return next;
-                }
-                return {
-                    ...prev,
-                    [payload.userId]: new Date(payload.lastReadAt),
-                };
-            });
-
-            if (payload.userId === userId) {
-                if (payload.lastReadAt) {
-                    const parsed = new Date(payload.lastReadAt);
-                    setMembership(current => ({ ...(current ?? {}), lastReadAt: parsed }));
-                    lastMarkedReadAtRef.current = parsed.getTime();
-                } else {
-                    setMembership(current => (current ? { ...current, lastReadAt: undefined } : current));
-                    lastMarkedReadAtRef.current = 0;
-                }
-            }
+        const handleConnect = () => {
+            subscribeToChat();
         };
 
         const handleTyping = (payload: { chatId: string; userId: string; isTyping: boolean }) => {
@@ -296,8 +281,7 @@ export function useChatRoom({ context, enabled = true }: UseChatRoomOptions) {
             }
         };
 
-        socket.on('chat:message', handleMessage);
-        socket.on('chat:read', handleRead);
+        socket.on('connect', handleConnect);
         socket.on('chat:typing', handleTyping);
         socket.on('chat:error', handleError);
 
@@ -307,14 +291,90 @@ export function useChatRoom({ context, enabled = true }: UseChatRoomOptions) {
                 clearTimeout(retryTimer);
             }
             socket.emit('chat:unsubscribe', { chatId });
-            socket.off('chat:message', handleMessage);
-            socket.off('chat:read', handleRead);
+            socket.off('connect', handleConnect);
             socket.off('chat:typing', handleTyping);
             socket.off('chat:error', handleError);
         };
-    }, [socket, connected, chatId, userId, refreshMessages]);
+    }, [socket, chatId, userId, refreshMessages]);
 
-    
+    // Firestore subscriptions
+    useEffect(() => {
+        if (!chatId || !db) return;
+
+        const messagesRef = collection(db, 'chats', chatId, 'messages');
+        const q = query(messagesRef, orderBy('sentAt', 'asc'), limit(100));
+
+        const unsubscribeMessages = onSnapshot(q, (snapshot) => {
+            const serverMessages = snapshot.docs.map(doc => {
+                const data = doc.data();
+                const sentAt = data.sentAt instanceof Timestamp
+                    ? data.sentAt.toDate().toISOString()
+                    : (typeof data.sentAt === 'string' ? data.sentAt : new Date().toISOString());
+
+                return {
+                    id: doc.id,
+                    senderId: data.senderId,
+                    text: data.text,
+                    sentAt,
+                    isSystem: data.system,
+                    clientMessageId: data.clientMessageId,
+                    replyTo: data.replyTo ? {
+                        id: data.replyTo.messageId,
+                        senderId: data.replyTo.senderId,
+                        text: data.replyTo.text,
+                    } : undefined,
+                    reactions: data.reactions || {},
+                    pending: false,
+                    failed: false,
+                } as ChatMessage;
+            });
+
+            setMessages(prev => {
+                const pending = prev.filter(m => m.pending);
+                const serverClientIds = new Set(serverMessages.map(m => m.clientMessageId).filter(Boolean));
+                const remainingPending = pending.filter(m => !m.clientMessageId || !serverClientIds.has(m.clientMessageId));
+                return [...serverMessages, ...remainingPending];
+            });
+
+            if (serverMessages.length > 0) {
+                const lastMsg = serverMessages[serverMessages.length - 1];
+                if (lastMsg.sentAt) {
+                    setLastMessageAt(new Date(lastMsg.sentAt));
+                }
+            }
+        });
+
+        const chatRef = doc(db, 'chats', chatId);
+        const unsubscribeChat = onSnapshot(chatRef, (snapshot) => {
+            if (!snapshot.exists()) return;
+            const data = snapshot.data();
+
+            // Handle read receipts
+            if (data.readReceipts) {
+                const parsedReceipts: Record<string, Date> = {};
+                Object.entries(data.readReceipts).forEach(([uid, ts]) => {
+                    if (ts instanceof Timestamp) {
+                        parsedReceipts[uid] = ts.toDate();
+                    } else if (typeof ts === 'string') {
+                        parsedReceipts[uid] = new Date(ts);
+                    }
+                });
+                setReadReceipts(parsedReceipts);
+
+                // Update own membership lastReadAt if available in readReceipts
+                if (userId && parsedReceipts[userId]) {
+                    const myReadAt = parsedReceipts[userId];
+                    setMembership(current => ({ ...(current ?? {}), lastReadAt: myReadAt }));
+                    lastMarkedReadAtRef.current = myReadAt.getTime();
+                }
+            }
+        });
+
+        return () => {
+            unsubscribeMessages();
+            unsubscribeChat();
+        };
+    }, [chatId, db, userId]);
 
     const markMessagesRead = useCallback((options?: { lastSeenAt?: string }) => {
         if (!socket || !connected || !chatId || !userId) return;
@@ -324,6 +384,11 @@ export function useChatRoom({ context, enabled = true }: UseChatRoomOptions) {
         if (!Number.isFinite(timestamp)) return;
         if (timestamp <= lastMarkedReadAtRef.current) return;
         lastMarkedReadAtRef.current = timestamp;
+
+        // Optimistic update: immediately update local state
+        const readAtDate = new Date(latest);
+        setMembership(current => ({ ...(current ?? {}), lastReadAt: readAtDate }));
+
         socket.emit('chat:mark-read', { chatId, lastSeenAt: latest });
     }, [socket, connected, chatId, userId, messages]);
 
@@ -386,6 +451,45 @@ export function useChatRoom({ context, enabled = true }: UseChatRoomOptions) {
         socket.emit('chat:typing', { chatId, isTyping });
     }, [socket, chatId]);
 
+    const sendReaction = useCallback(async (messageId: string, emoji: string) => {
+        if (!chatId || !userId) return;
+
+        // Optimistic update
+        setMessages(prev => prev.map(msg => {
+            if (msg.id !== messageId) return msg;
+            const currentReactions = { ...(msg.reactions || {}) };
+            if (currentReactions[userId] === emoji) {
+                delete currentReactions[userId];
+            } else {
+                currentReactions[userId] = emoji;
+            }
+            return { ...msg, reactions: currentReactions };
+        }));
+
+        try {
+            await socialPost('/api/chats/reaction', {
+                chatId,
+                messageId,
+                emoji
+            });
+        } catch (err) {
+            // Revert on failure (simplified: just refresh or let the user retry, but ideally we'd revert state)
+            console.error('Failed to send reaction', err);
+            toast({
+                variant: 'destructive',
+                title: 'Failed to react',
+                description: 'Could not update reaction.',
+            });
+            // Revert optimistic update
+            setMessages(prev => prev.map(msg => {
+                if (msg.id !== messageId) return msg;
+                // This is tricky without knowing previous state exactly, but we can just fetch fresh data
+                return msg;
+            }));
+            void refreshMessages();
+        }
+    }, [chatId, userId, toast, refreshMessages]);
+
     return {
         ready: status === 'ready',
         status,
@@ -400,6 +504,7 @@ export function useChatRoom({ context, enabled = true }: UseChatRoomOptions) {
         refreshMessages,
         markMessagesRead,
         typingUsers,
-        sendTyping
+        sendTyping,
+        sendReaction
     };
 }

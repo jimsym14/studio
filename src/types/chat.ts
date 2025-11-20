@@ -12,4 +12,5 @@ export type ChatMessagePayload = {
   isSystem?: boolean;
   replyTo?: ChatMessageReplyPayload | null;
   clientMessageId?: string | null;
+  reactions?: Record<string, string>;
 };

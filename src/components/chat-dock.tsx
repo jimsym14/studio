@@ -1,9 +1,24 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type CSSProperties } from "react";
 import { AnimatePresence, LayoutGroup, motion } from "framer-motion";
 import { format } from "date-fns";
-import { MessageCircle, Reply, SendHorizonal, X } from "lucide-react";
+import {
+  MessageCircle,
+  X,
+  SendHorizonal,
+  Reply,
+  Copy,
+  Smile,
+  Heart,
+  ThumbsUp,
+  Frown,
+  Angry,
+  Laugh,
+  Plus
+} from "lucide-react";
+import EmojiPicker, { Theme, EmojiClickData } from "emoji-picker-react";
+import { useLongPress } from "use-long-press";
 
 import type { ChatAvailability, ChatContextDescriptor } from "@/types/social";
 import { cn } from "@/lib/utils";
@@ -46,12 +61,19 @@ const avatarGradients = [
 
 const fallbackEmojis = ["⚡️", "🔥", "🌟", "🎯", "🚀", "🎉"];
 
+type BubbleEdge = "left" | "right";
+
 type BubblePosition = {
-  x: number;
-  y: number;
+  edge: BubbleEdge;
+  offsetY: number;
 };
 
-const defaultBubblePosition: BubblePosition = { x: 0, y: 0 };
+const BUBBLE_SIZE = 64;
+const EDGE_PADDING = 24;
+const CHAT_PANEL_WIDTH = 420;
+const CHAT_PANEL_HEIGHT = 580; // Approximate max height
+
+const defaultBubblePosition: BubblePosition = { edge: "right", offsetY: 100 };
 
 const deriveContextStorageKey = (descriptor: ChatContextDescriptor) => {
   if (descriptor.scope === "game") {
@@ -91,7 +113,7 @@ export function ChatDock({
   const [open, setOpen] = useState(false);
   const [message, setMessage] = useState("");
   const [replyTarget, setReplyTarget] = useState<ChatMessage | null>(null);
-  const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null);
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const presenceActionRef = useRef<"enter" | "leave">("leave");
   const composerFocusRef = useRef(false);
@@ -112,32 +134,35 @@ export function ChatDock({
     }
     | null
   >(null);
-  const suppressToggleRef = useRef(false);
+  const [suppressToggleRef, setSuppressToggle] = useState(false);
+  const isDraggingRef = useRef(false);
+  const { theme } = useTheme();
+  const [isMobile, setIsMobile] = useState(false);
+  const nativeEmojiInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const checkMobile = () => setIsMobile(window.matchMedia("(pointer: coarse)").matches);
+    checkMobile();
+    window.addEventListener("resize", checkMobile);
+    return () => window.removeEventListener("resize", checkMobile);
+  }, []);
+
+  // Context Menu State
+  const [contextMenu, setContextMenu] = useState<{
+    messageId: string;
+    rect: DOMRect;
+  } | null>(null);
 
   const clampPosition = useCallback((next: BubblePosition) => {
     if (typeof window === "undefined") return next;
-    const padding = 16;
-    const maxX = window.innerWidth - 80; // approximate width of bubble
-    const maxY = window.innerHeight - 80; // approximate height of bubble
 
-    // We want to keep it within the screen bounds with some padding
-    // The bubble is positioned from bottom-right, so coordinates are negative-ish or relative
-    // Actually the current implementation uses transform translate from a fixed bottom-right position.
-    // Let's adjust to be more robust.
-
-    // Current implementation: bottom-6 right-5 (approx 24px, 20px)
-    // Translate (0,0) is at that anchor.
-    // Negative X moves left, Negative Y moves up.
-
-    const maxTranslateX = 20; // Can go a bit right
-    const minTranslateX = -(window.innerWidth - 100); // Can go all the way left
-
-    const maxTranslateY = 20; // Can go a bit down
-    const minTranslateY = -(window.innerHeight - 150); // Can go all the way up
+    // Ensure bubble stays within screen bounds
+    const maxY = window.innerHeight - BUBBLE_SIZE - EDGE_PADDING;
+    const minY = EDGE_PADDING;
 
     return {
-      x: Math.min(maxTranslateX, Math.max(minTranslateX, next.x)),
-      y: Math.min(maxTranslateY, Math.max(minTranslateY, next.y)),
+      edge: "right" as const,
+      offsetY: Math.min(maxY, Math.max(minY, next.offsetY)),
     };
   }, []);
 
@@ -157,7 +182,7 @@ export function ChatDock({
     const handleResize = () => {
       const current = livePositionRef.current;
       const clamped = clampPosition(current);
-      if (clamped.x === current.x && clamped.y === current.y) {
+      if (clamped.edge === current.edge && clamped.offsetY === current.offsetY) {
         return;
       }
       livePositionRef.current = clamped;
@@ -185,6 +210,7 @@ export function ChatDock({
     markMessagesRead,
     typingUsers,
     sendTyping,
+    sendReaction,
   } =
     useChatRoom({
       context,
@@ -287,11 +313,6 @@ export function ChatDock({
   }, [chatId, open, ready, syncPresence]);
 
   useEffect(() => {
-    if (!open || !chatId || !ready) return;
-    void syncPresence("enter");
-  }, [chatId, messages, open, ready, syncPresence]);
-
-  useEffect(() => {
     return () => {
       if (presenceActionRef.current === "enter" && chatId) {
         void syncPresence("leave");
@@ -359,11 +380,17 @@ export function ChatDock({
       const deltaX = clientX - dragState.startX;
       const deltaY = clientY - dragState.startY;
       if (!dragState.moved) {
-        const thresholdExceeded = Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2;
+        const thresholdExceeded = Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5;
         if (!thresholdExceeded) return;
         dragState.moved = true;
+        isDraggingRef.current = true; // Mark as dragging
+        setOpen(false); // Close chat immediately on drag start
       }
-      const next = clampPosition({ x: dragState.originX + deltaX, y: dragState.originY + deltaY });
+
+      // Live update: follow cursor precisely during drag
+      const newY = clientY - BUBBLE_SIZE / 2;
+
+      const next = clampPosition({ edge: "right" as const, offsetY: newY });
       livePositionRef.current = next;
       setDragOverridePosition(next);
     },
@@ -377,18 +404,22 @@ export function ChatDock({
       dragStateRef.current = null;
       const moved = dragState.moved;
       if (moved) {
+        // Snap to edge with final position
         const finalPosition = clampPosition(livePositionRef.current);
         livePositionRef.current = finalPosition;
         setStoredBubblePosition(finalPosition);
       }
       setDragOverridePosition(null);
       if (moved && !options?.cancelled) {
-        suppressToggleRef.current = true;
+        setSuppressToggle(true);
         if (typeof window !== "undefined") {
           window.setTimeout(() => {
-            suppressToggleRef.current = false;
-          }, 0);
+            setSuppressToggle(false);
+            isDraggingRef.current = false; // Clear dragging flag
+          }, 150);
         }
+      } else {
+        isDraggingRef.current = false; // Clear dragging flag
       }
     },
     [clampPosition, setStoredBubblePosition]
@@ -400,21 +431,36 @@ export function ChatDock({
   }, [open, ready, refreshMessages]);
 
   useEffect(() => {
-    if (!open || !ready || !chatId) return;
+    if (!ready || !chatId) return;
     if (realtimeConnected) return;
     const interval = window.setInterval(() => {
       void refreshMessages();
     }, 5000);
     return () => window.clearInterval(interval);
-  }, [chatId, open, ready, realtimeConnected, refreshMessages]);
+  }, [chatId, ready, realtimeConnected, refreshMessages]);
 
   useEffect(() => {
     if (!open || !ready || !latestMessage) return;
     if (!latestMessage.sentAt || latestMessage.senderId === userId) return;
-    const messageTime = new Date(latestMessage.sentAt).getTime();
-    if (!Number.isFinite(messageTime)) return;
-    if (messageTime <= selfReadAt) return;
-    markMessagesRead({ lastSeenAt: latestMessage.sentAt });
+
+    const tryMarkRead = () => {
+      if (document.visibilityState !== "visible") return;
+      const messageTime = new Date(latestMessage.sentAt!).getTime();
+      if (!Number.isFinite(messageTime)) return;
+      if (messageTime <= selfReadAt) return;
+      markMessagesRead({ lastSeenAt: latestMessage.sentAt! });
+    };
+
+    tryMarkRead();
+
+    const handleVisibilityChange = () => tryMarkRead();
+    window.addEventListener("focus", handleVisibilityChange);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("focus", handleVisibilityChange);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, [open, ready, latestMessage, markMessagesRead, selfReadAt, userId]);
 
   const handleBubblePointerDown = useCallback(
@@ -426,8 +472,8 @@ export function ChatDock({
         pointerId: event.pointerId,
         startX: event.clientX,
         startY: event.clientY,
-        originX: livePositionRef.current.x,
-        originY: livePositionRef.current.y,
+        originX: 0, // Not used anymore
+        originY: livePositionRef.current.offsetY,
         moved: false,
       };
       if (event.currentTarget.setPointerCapture) {
@@ -486,38 +532,119 @@ export function ChatDock({
   );
 
   const handleToggle = useCallback(() => {
-    if (suppressToggleRef.current) {
-      suppressToggleRef.current = false;
+    if (suppressToggleRef || isDraggingRef.current) {
       return;
     }
     setOpen((previous) => !previous);
-  }, []);
+  }, [suppressToggleRef]);
 
   const computedUnread = useMemo(() => {
-    if (!messages.length) return 0;
+    if (!messages.length || open) return 0; // No unread if chat is open
     return messages.reduce((total, entry) => {
       if (entry.senderId === userId || !entry.sentAt) return total;
       const sentAt = new Date(entry.sentAt).getTime();
       if (!Number.isFinite(sentAt)) return total;
       return sentAt > selfReadAt ? total + 1 : total;
     }, 0);
-  }, [messages, selfReadAt, userId]);
+  }, [messages, selfReadAt, userId, open]);
 
   const totalUnread = Math.max(unreadCount, computedUnread);
-  const derivedUnread = !open && totalUnread > 0;
-  const showUnreadBadge = totalUnread > 0;
+  const derivedUnread = totalUnread > 0;
+  const showUnreadBadge = !open && totalUnread > 0;
   const headerStatus = (() => {
     if (!readyToChat) return "Waiting for players";
     if (status === "loading") return "Connecting…";
     if (!ready) return "Preparing chat…";
     if (error) return error;
-    if (typingUsers.length > 0) {
-      const names = typingUsers.map((id: string) => participantLookup[id]?.displayName ?? "Player").join(", ");
-      return `${names} is typing...`;
-    }
     if (lastMessageAt) return `Last message at ${formatMessageTime(lastMessageAt)}`;
     return "Connected";
   })();
+
+  // Calculate chat panel position - REVERSED LOGIC
+  // Bottom half of screen = chat on TOP-LEFT of bubble
+  // Top half of screen = chat on BOTTOM-LEFT of bubble
+  const chatPanelPosition = useMemo(() => {
+    if (typeof window === "undefined") return "bottom";
+
+    const bubbleY = liveBubblePosition.offsetY;
+    const windowHeight = window.innerHeight;
+    const isBottomHalf = bubbleY > windowHeight / 2;
+
+    // Reversed: bottom half → top, top half → bottom
+    return isBottomHalf ? "top" : "bottom";
+  }, [liveBubblePosition.offsetY]);
+
+  const bubbleStyle = useMemo<CSSProperties>(() => {
+    const baseStyle: CSSProperties = {
+      position: "fixed",
+      top: `${liveBubblePosition.offsetY}px`,
+    };
+    if (liveBubblePosition.edge === "left") {
+      return { ...baseStyle, left: `${EDGE_PADDING}px` };
+    } else {
+      return { ...baseStyle, right: `${EDGE_PADDING}px` };
+    }
+  }, [liveBubblePosition]);
+
+  // Context Menu Handlers
+  const handleContextMenu = useCallback((e: React.MouseEvent, messageId: string) => {
+    e.preventDefault();
+    const target = (e.target as HTMLElement).closest('[data-message-bubble]');
+    if (target) {
+      setContextMenu({
+        messageId,
+        rect: target.getBoundingClientRect(),
+      });
+    }
+  }, []);
+
+  const bindLongPress = useLongPress((e, { context }) => {
+    const event = e as unknown as React.MouseEvent;
+    const messageId = context as string;
+    const target = (event.target as HTMLElement).closest('[data-message-bubble]');
+    if (target) {
+      setContextMenu({
+        messageId,
+        rect: target.getBoundingClientRect(),
+      });
+    }
+  }, {
+    threshold: 500,
+    captureEvent: true,
+    cancelOnMovement: true,
+  });
+
+  const closeContextMenu = () => {
+    setContextMenu(null);
+    setShowEmojiPicker(false);
+  };
+
+  const handleCopy = (text: string) => {
+    navigator.clipboard.writeText(text);
+    toast({ description: "Copied to clipboard" });
+    closeContextMenu();
+  };
+
+  const handleReplyFromMenu = (message: ChatMessage) => {
+    setReplyTarget(message);
+    closeContextMenu();
+  };
+
+  const handleReaction = (emoji: string) => {
+    if (!contextMenu) return;
+    void sendReaction(contextMenu.messageId, emoji);
+    closeContextMenu();
+  };
+
+  const handleNativeEmojiSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    if (!val) return;
+    // Attempt to extract the last character which is likely the emoji
+    // But actually, the input will just have the emoji.
+    // We'll just take the value.
+    handleReaction(val);
+    e.target.value = ""; // Reset
+  };
 
   return (
     <div className="pointer-events-none fixed inset-0 z-[70]">
@@ -525,246 +652,407 @@ export function ChatDock({
         {readyToChat && (
           <motion.div
             key="chat-dock"
-            className="pointer-events-none absolute bottom-6 right-5 sm:bottom-8 sm:right-8"
-            initial={{ opacity: 0, scale: 0.9, y: 30 }}
+            className={cn(
+              "pointer-events-auto flex flex-col items-end relative",
+              isMobile && "select-none touch-callout-none"
+            )}
+            initial={{ opacity: 0, scale: 0.8, y: 20 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.85, y: 20 }}
-            transition={{ duration: 0.25, ease: "easeOut" }}
-            style={{ transform: `translate3d(${liveBubblePosition.x}px, ${liveBubblePosition.y}px, 0)` }}
+            exit={{ opacity: 0, scale: 0.8, y: 20 }}
+            transition={{ type: "spring", stiffness: 300, damping: 25 }}
+            style={{ ...bubbleStyle, WebkitTouchCallout: isMobile ? "none" : "default" }}
           >
-            <div className="pointer-events-auto flex flex-col items-end gap-3">
-              <AnimatePresence>
-                {open && (
-                  <motion.div
-                    key="chat-panel"
-                    initial={{ opacity: 0, y: 20, scale: 0.95 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                    transition={{ duration: 0.2, ease: "easeOut" }}
-                    className="w-[min(420px,calc(100vw-3rem))] rounded-[28px] border border-white/10 bg-gradient-to-b from-[#0c0f19]/95 via-[#0c0f19]/90 to-[#0c0f19]/85 p-5 text-white shadow-[0_45px_120px_rgba(0,0,0,0.5)] backdrop-blur-2xl dark:from-[#0c0f19]/95 dark:via-[#0c0f19]/90 dark:to-[#0c0f19]/85 light:from-white/95 light:via-white/90 light:to-white/85 light:text-black light:border-black/10"
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="text-[0.65rem] uppercase tracking-[0.4em] text-white/60 light:text-black/60">Chat with</p>
-                        <p className="text-xl font-semibold leading-tight text-white light:text-black">{partnerDisplayName}</p>
-                        <p className="mt-1 text-xs text-white/65 light:text-black/65">{headerStatus}</p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {decoratedParticipants.slice(0, 2).map((participant: ChatParticipantSummary, index) => {
-                          const gradient = avatarGradients[index % avatarGradients.length];
-                          const fallbackInitial = participant.displayName?.[0]?.toUpperCase() ?? "?";
+            <AnimatePresence mode="wait">
+              {open && (
+                <motion.div
+                  key="chat-panel"
+                  initial={{
+                    opacity: 0,
+                    scale: 0.1,
+                    x: 0,
+                    y: chatPanelPosition === "top" ? 20 : -20,
+                  }}
+                  animate={{
+                    opacity: 1,
+                    scale: 1,
+                    x: 0,
+                    y: 0,
+                  }}
+                  exit={{
+                    opacity: 0,
+                    scale: 0.1,
+                    x: 0,
+                    y: chatPanelPosition === "top" ? 20 : -20,
+                  }}
+                  transition={{
+                    type: "spring",
+                    stiffness: 350,
+                    damping: 25,
+                    opacity: { duration: 0.2 }
+                  }}
+                  style={{
+                    position: "absolute",
+                    right: 0,
+                    bottom: chatPanelPosition === "top" ? "calc(100% + 16px)" : undefined,
+                    top: chatPanelPosition === "bottom" ? "calc(100% + 16px)" : undefined,
+                    transformOrigin: chatPanelPosition === "top"
+                      ? "bottom right"
+                      : "top right"
+                  }}
+                  className="w-[min(420px,calc(100vw-3rem))] rounded-[28px] border bg-white/95 p-6 shadow-[0_20px_60px_rgba(0,0,0,0.15)] backdrop-blur-2xl dark:border-white/10 dark:bg-gradient-to-b dark:from-[#0c0f19]/95 dark:via-[#0c0f19]/90 dark:to-[#0c0f19]/85 dark:text-white border-gray-200 text-gray-900 max-h-[80vh] flex flex-col"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-[0.65rem] uppercase tracking-[0.4em] text-gray-500 dark:text-white/60">Chat with</p>
+                      <p className="text-xl font-comic leading-tight text-gray-900 dark:text-white">{partnerDisplayName}</p>
+                      <p className="mt-1 text-xs text-gray-600 dark:text-white/65">{headerStatus}</p>
+                    </div>
+                  </div>
+
+                  <div className="mt-6 max-h-80 space-y-3 overflow-y-auto px-4 scrollbar-hide overscroll-contain" ref={scrollRef}>
+                    <LayoutGroup>
+                      <AnimatePresence initial={false}>
+                        {messages.map((entry: ChatMessage, index: number) => {
+                          const isSelf = entry.senderId === userId || participantLookup[entry.senderId]?.isSelf;
+                          const participant = participantLookup[entry.senderId];
+                          const bubbleColors = isSelf
+                            ? "bg-gradient-to-br from-[#0B84FE] to-[#0066CC] text-white shadow-[0_2px_12px_rgba(11,132,254,0.3)]"
+                            : "bg-[#E9E9EB] text-gray-900 dark:bg-white/10 dark:text-white";
+
+                          // Check if previous message was from same sender
+                          const prevMessage = index > 0 ? messages[index - 1] : null;
+                          const isGroupStart = !prevMessage || prevMessage.senderId !== entry.senderId;
+
+                          const isActive = contextMenu?.messageId === entry.id;
+
                           return (
-                            <div key={participant.id} className="flex flex-col items-center text-[0.6rem] uppercase tracking-[0.25em] text-white/60 light:text-black/60">
-                              <Avatar className="h-11 w-11 border border-white/20 bg-gradient-to-br text-base font-semibold light:border-black/10">
-                                {participant.photoURL ? (
-                                  <AvatarImage src={participant.photoURL} alt={participant.displayName} />
-                                ) : (
-                                  <AvatarFallback className={cn("bg-gradient-to-br text-white", gradient)}>
-                                    {fallbackInitial}
-                                  </AvatarFallback>
+                            <motion.div
+                              key={entry.id}
+                              layout={!isMobile}
+                              initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                              animate={{
+                                opacity: 1,
+                                y: 0,
+                                scale: isActive ? 1.15 : 1,
+                                zIndex: isActive ? 50 : 0,
+                                filter: isActive ? "drop-shadow(0 10px 20px rgba(0,0,0,0.3))" : (contextMenu ? (isMobile ? "opacity(0.3)" : "blur(2px) opacity(0.5)") : "none")
+                              }}
+                              exit={{ opacity: 0, y: -10, scale: 0.9 }}
+                              transition={{ type: "spring", stiffness: 500, damping: 30 }}
+                              className={cn(
+                                "flex gap-3 items-end relative",
+                                isSelf ? "justify-end" : "justify-start"
+                              )}
+                              onContextMenu={(e) => handleContextMenu(e, entry.id)}
+                              {...bindLongPress(entry.id)}
+                              data-message-bubble
+                              style={{ WebkitTouchCallout: "none" }}
+                            >
+                              {!isSelf && isGroupStart && (
+                                <Avatar className="h-9 w-9 border border-gray-300 dark:border-white/15">
+                                  {participant?.photoURL ? (
+                                    <AvatarImage src={participant.photoURL} alt={participant?.displayName ?? "Player"} />
+                                  ) : (
+                                    <AvatarFallback className="bg-gray-200 text-gray-700 dark:bg-white/10 dark:text-white">
+                                      {participant?.displayName?.[0]?.toUpperCase() ?? "?"}
+                                    </AvatarFallback>
+                                  )}
+                                </Avatar>
+                              )}
+                              {!isSelf && !isGroupStart && (
+                                <div className="w-9" />
+                              )}
+                              <div className="flex flex-col gap-1 max-w-[80%]">
+                                {isGroupStart && (
+                                  <p className="text-[0.65rem] uppercase tracking-[0.35em] text-gray-500 dark:text-white/50 px-1">
+                                    {participant?.displayName ?? (isSelf ? "You" : "Player")}
+                                  </p>
                                 )}
-                              </Avatar>
-                              <span className="mt-1 text-[0.55rem] text-white/50 light:text-black/50">
-                                {participant.isSelf
-                                  ? "YOU"
-                                  : participant.displayName?.toUpperCase() ?? "PLAYER"}
-                              </span>
-                            </div>
+                                <div className={cn(
+                                  "inline-block rounded-[20px] px-4 py-2.5 text-[15px] leading-snug relative",
+                                  bubbleColors
+                                )}>
+                                  {entry.replyTo && (
+                                    <div className="mb-2 rounded-2xl border bg-white/20 px-3 py-2 text-xs border-gray-300 dark:border-white/20 dark:bg-white/10">
+                                      <p className="text-[0.6rem] uppercase tracking-[0.35em] text-gray-600 dark:text-white/70">
+                                        Replying to {participantLookup[entry.replyTo.senderId]?.displayName ?? "Player"}
+                                      </p>
+                                      <p className="line-clamp-2 text-gray-800 dark:text-white/90">{trimPreview(entry.replyTo.text)}</p>
+                                    </div>
+                                  )}
+                                  <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] select-none">{entry.text}</p>
+                                  {entry.reactions && entry.reactions[userId!] && (
+                                    <button
+                                      className="absolute -bottom-3 -right-3 flex h-9 w-9 items-center justify-center rounded-full bg-white shadow-sm text-xl border border-gray-200 dark:bg-gray-800 dark:border-gray-700 z-10 hover:scale-110 transition-transform"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        void sendReaction(entry.id, entry.reactions![userId!]);
+                                      }}
+                                    >
+                                      {entry.reactions[userId!]}
+                                    </button>
+                                  )}
+                                </div>
+                                {isSelf && entry.id === lastOutgoingMessage?.id && readReceipt && (
+                                  <p className="mt-1 text-[0.6rem] uppercase tracking-[0.35em] text-gray-500 dark:text-white/45 px-1">
+                                    {readReceipt}
+                                  </p>
+                                )}
+                              </div>
+                              {isSelf && isGroupStart && (
+                                <Avatar className="h-9 w-9 border border-gray-300 dark:border-white/15">
+                                  {participant?.photoURL ? (
+                                    <AvatarImage src={participant.photoURL} alt={participant?.displayName ?? "Player"} />
+                                  ) : (
+                                    <AvatarFallback className="bg-gray-200 text-gray-700 dark:bg-white/10 dark:text-white">
+                                      {participant?.displayName?.[0]?.toUpperCase() ?? "?"}
+                                    </AvatarFallback>
+                                  )}
+                                </Avatar>
+                              )}
+                              {isSelf && !isGroupStart && (
+                                <div className="w-9" />
+                              )}
+                            </motion.div>
                           );
                         })}
-                      </div>
-                    </div>
+                      </AnimatePresence>
+                    </LayoutGroup>
+                  </div>
 
-                    <div className="mt-5 max-h-72 space-y-3 overflow-y-auto pr-1" ref={scrollRef}>
-                      <LayoutGroup>
-                        <AnimatePresence initial={false}>
-                          {messages.map((entry: ChatMessage) => {
-                            const isSelf = entry.senderId === userId || participantLookup[entry.senderId]?.isSelf;
-                            const participant = participantLookup[entry.senderId];
-                            const bubbleColors = isSelf
-                              ? "bg-gradient-to-r from-[#1f8ef1] to-[#5e72e4] text-white"
-                              : "bg-white/10 text-white light:bg-black/5 light:text-black";
-                            return (
-                              <motion.div
-                                key={entry.id}
-                                layout
-                                initial={{ opacity: 0, y: 25, scale: 0.95 }}
-                                animate={{ opacity: 1, y: 0, scale: 1 }}
-                                exit={{ opacity: 0, y: -10, scale: 0.9 }}
-                                transition={{ duration: 0.2, ease: "easeOut" }}
-                                className={cn("flex gap-3", isSelf ? "justify-end" : "justify-start")}
-                                onMouseEnter={() => setHoveredMessageId(entry.id)}
-                                onMouseLeave={() => setHoveredMessageId((prev) => (prev === entry.id ? null : prev))}
-                              >
-                                {!isSelf && (
-                                  <Avatar className="h-9 w-9 border border-white/15 light:border-black/10">
-                                    {participant?.photoURL ? (
-                                      <AvatarImage src={participant.photoURL} alt={participant?.displayName ?? "Player"} />
-                                    ) : (
-                                      <AvatarFallback className="bg-white/10 text-white light:bg-black/5 light:text-black">
-                                        {participant?.displayName?.[0]?.toUpperCase() ?? "?"}
-                                      </AvatarFallback>
-                                    )}
-                                  </Avatar>
-                                )}
-                                <div className="relative flex max-w-[260px] flex-col">
-                                  <div className="flex items-center gap-2 text-[0.65rem] uppercase tracking-[0.35em] text-white/50 light:text-black/50">
-                                    <span>{participant?.displayName ?? (isSelf ? "You" : "Player")}</span>
-                                    <span>{formatMessageTime(entry.sentAt ? new Date(entry.sentAt) : null)}</span>
-                                  </div>
-                                  <div
-                                    className={cn(
-                                      "relative mt-1 rounded-3xl px-4 py-2 text-sm leading-snug shadow-[0_18px_40px_rgba(0,0,0,0.35)]",
-                                      bubbleColors
-                                    )}
-                                  >
-                                    {entry.replyTo && (
-                                      <motion.div
-                                        layout
-                                        className="mb-2 rounded-2xl border border-white/20 bg-white/10 px-3 py-2 text-xs text-white/80 light:border-black/10 light:bg-black/5 light:text-black/80"
-                                      >
-                                        <p className="text-[0.6rem] uppercase tracking-[0.35em] text-white/70 light:text-black/70">
-                                          Replying to {participantLookup[entry.replyTo.senderId]?.displayName ?? "Player"}
-                                        </p>
-                                        <p className="line-clamp-2 text-white/90 light:text-black/90">{trimPreview(entry.replyTo.text)}</p>
-                                      </motion.div>
-                                    )}
-                                    <p className="whitespace-pre-line break-words">{entry.text}</p>
-                                  </div>
-                                  {isSelf && entry.id === lastOutgoingMessage?.id && readReceipt && (
-                                    <motion.p
-                                      layout
-                                      className="mt-1 text-[0.6rem] uppercase tracking-[0.35em] text-white/45 light:text-black/45"
-                                    >
-                                      {readReceipt}
-                                    </motion.p>
-                                  )}
-                                  <AnimatePresence>
-                                    {hoveredMessageId === entry.id && (
-                                      <motion.button
-                                        type="button"
-                                        key="reply"
-                                        initial={{ opacity: 0, y: 6 }}
-                                        animate={{ opacity: 1, y: 0 }}
-                                        exit={{ opacity: 0, y: 6 }}
-                                        transition={{ duration: 0.15 }}
-                                        className="absolute -top-3 h-8 w-8 rounded-full border border-white/20 bg-black/70 text-white"
-                                        style={{ right: isSelf ? 0 : undefined, left: !isSelf ? 0 : undefined }}
-                                        onClick={() => setReplyTarget(entry)}
-                                      >
-                                        <Reply className="mx-auto h-4 w-4" />
-                                      </motion.button>
-                                    )}
-                                  </AnimatePresence>
-                                </div>
-                                {isSelf && (
-                                  <Avatar className="h-9 w-9 border border-white/15 light:border-black/10">
-                                    {participant?.photoURL ? (
-                                      <AvatarImage src={participant.photoURL} alt={participant?.displayName ?? "Player"} />
-                                    ) : (
-                                      <AvatarFallback className="bg-white/10 text-white light:bg-black/5 light:text-black">
-                                        {participant?.displayName?.[0]?.toUpperCase() ?? "?"}
-                                      </AvatarFallback>
-                                    )}
-                                  </Avatar>
-                                )}
-                              </motion.div>
-                            );
-                          })}
-                        </AnimatePresence>
-                      </LayoutGroup>
-                    </div>
-
-                    <div className="mt-4 space-y-3">
+                  <div className="mt-6 space-y-3">
+                    <AnimatePresence>
+                      {replyTarget && (
+                        <motion.div
+                          key="reply-preview"
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: 10 }}
+                          className="flex items-center justify-between rounded-2xl border bg-gray-100 px-3 py-2 text-xs border-gray-300 dark:border-white/15 dark:bg-white/5"
+                        >
+                          <div className="flex-1 min-w-0 mr-2">
+                            <p className="text-[0.6rem] uppercase tracking-[0.35em] text-gray-500 dark:text-white/60 truncate">
+                              Replying to {participantLookup[replyTarget.senderId]?.displayName ?? "Player"}
+                            </p>
+                            <p className="truncate text-gray-700 dark:text-white/80">{replyTarget.text}</p>
+                          </div>
+                          <button
+                            type="button"
+                            className="ml-2 rounded-full border p-1.5 transition bg-white/50 hover:bg-white border-gray-300 text-gray-600 hover:text-gray-900 dark:border-white/20 dark:bg-white/10 dark:text-white/70 dark:hover:text-white dark:hover:bg-white/20"
+                            onClick={() => setReplyTarget(null)}
+                            aria-label="Cancel reply"
+                          >
+                            <X className="h-4 w-4" />
+                          </button>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                    <div className="flex items-end gap-2 relative">
                       <AnimatePresence>
-                        {replyTarget && (
+                        {typingUsers.length > 0 && (
                           <motion.div
-                            key="reply-preview"
                             initial={{ opacity: 0, y: 10 }}
                             animate={{ opacity: 1, y: 0 }}
                             exit={{ opacity: 0, y: 10 }}
-                            className="flex items-center justify-between rounded-2xl border border-white/15 bg-white/5 px-3 py-2 text-xs light:border-black/10 light:bg-black/5"
+                            className="absolute -top-6 left-0 right-0 flex justify-center"
                           >
-                            <div>
-                              <p className="text-[0.6rem] uppercase tracking-[0.35em] text-white/60 light:text-black/60">
-                                Replying to {participantLookup[replyTarget.senderId]?.displayName ?? "Player"}
-                              </p>
-                              <p className="text-white/80 light:text-black/80">{trimPreview(replyTarget.text, 120)}</p>
-                            </div>
-                            <button
-                              type="button"
-                              className="rounded-full border border-white/20 p-1 text-white/70 transition hover:text-white light:border-black/10 light:text-black/70 light:hover:text-black"
-                              onClick={() => setReplyTarget(null)}
-                              aria-label="Cancel reply"
-                            >
-                              <X className="h-4 w-4" />
-                            </button>
+                            <span className="text-[10px] font-medium text-gray-400 dark:text-white/40 px-2 py-0.5">
+                              {typingUsers.map((id) => participantLookup[id]?.displayName ?? "Player").join(", ")} is typing...
+                            </span>
                           </motion.div>
                         )}
                       </AnimatePresence>
-                      <div className="flex items-end gap-2">
-                        <Textarea
-                          value={message}
-                          onChange={(event) => setMessage(event.target.value)}
-                          onKeyDown={handleKeyDown}
-                          onFocus={() => notifyComposerFocus(true)}
-                          onBlur={() => notifyComposerFocus(false)}
-                          placeholder={
-                            availability === "guest-blocked"
-                              ? "Sign in to chat"
-                              : ready
-                                ? "Message the other player"
-                                : status === "loading"
-                                  ? "Unlocking chat…"
-                                  : "Preparing room…"
-                          }
-                          disabled={!ready || availability === "guest-blocked" || sending}
-                          className="min-h-[46px] flex-1 resize-none rounded-2xl border border-white/15 bg-white/5 text-sm text-white placeholder:text-white/40 light:border-black/10 light:bg-black/5 light:text-black light:placeholder:text-black/40"
-                        />
-                        <Button
-                          type="button"
-                          size="icon"
-                          disabled={!ready || availability === "guest-blocked" || sending || !message.trim()}
-                          className="h-12 w-12 rounded-2xl bg-white text-black hover:bg-white/90 light:bg-black light:text-white light:hover:bg-black/90"
-                          onClick={() => void handleSend()}
-                        >
-                          <SendHorizonal className="h-5 w-5" />
-                        </Button>
-                      </div>
-                      {availability === "guest-blocked" && (
-                        <p className="text-xs text-rose-200">Guests can read along but must sign in to reply.</p>
-                      )}
-                      {error && <p className="text-xs text-rose-300">{error}</p>}
+                      <Textarea
+                        value={message}
+                        onChange={(event) => setMessage(event.target.value)}
+                        onKeyDown={handleKeyDown}
+                        onFocus={() => notifyComposerFocus(true)}
+                        onBlur={() => notifyComposerFocus(false)}
+                        placeholder={
+                          availability === "guest-blocked"
+                            ? "Sign in to chat"
+                            : ready
+                              ? "Message the other player"
+                              : status === "loading"
+                                ? "Unlocking chat…"
+                                : "Preparing room…"
+                        }
+                        disabled={!ready || availability === "guest-blocked" || sending}
+                        className="flex-1 resize-none rounded-2xl border bg-gray-100 text-sm text-gray-900 placeholder:text-gray-500 border-gray-300 dark:border-white/15 dark:bg-white/5 dark:text-white dark:placeholder:text-white/40 py-3 px-4 min-h-[48px] max-h-[120px] scrollbar-hide"
+                        rows={1}
+                        style={{ height: 'auto', lineHeight: '1.5' }}
+                      />
+                      <Button
+                        type="button"
+                        size="icon"
+                        disabled={!ready || availability === "guest-blocked" || sending || !message.trim()}
+                        className="h-12 w-12 shrink-0 rounded-full bg-[#0B84FE] text-white hover:bg-[#0066CC] shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                        onClick={() => void handleSend()}
+                      >
+                        <SendHorizonal className="h-5 w-5" />
+                      </Button>
                     </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-              <motion.button
-                type="button"
-                aria-label="Toggle game chat"
-                onClick={handleToggle}
-                onPointerDown={handleBubblePointerDown}
-                onPointerMove={handleBubblePointerMove}
-                onPointerUp={handleBubblePointerUp}
-                onPointerCancel={handleBubblePointerCancel}
-                className={cn(
-                  "relative flex h-16 w-16 items-center justify-center rounded-full border border-white/20 bg-black/85 text-white shadow-[0_18px_45px_rgba(0,0,0,0.5)] transition touch-none light:bg-white/85 light:text-black light:border-black/10",
-                  open && "border-white/50 light:border-black/50"
-                )}
-                animate={derivedUnread ? { scale: [1, 1.1, 0.95, 1] } : { scale: 1 }}
-                transition={{ duration: derivedUnread ? 0.9 : 0.2, ease: "easeOut" }}
-              >
-                <MessageCircle className="h-7 w-7" />
-                {showUnreadBadge && (
-                  <span className="absolute -top-1 -right-1 inline-flex h-6 min-w-[1.5rem] items-center justify-center rounded-full bg-[#ff5d73] px-2 text-xs font-semibold">
-                    {Math.min(99, totalUnread)}
-                  </span>
-                )}
-              </motion.button>
-            </div>
+                    {availability === "guest-blocked" && (
+                      <p className="text-xs text-rose-200">Guests can read along but must sign in to reply.</p>
+                    )}
+                    {error && <p className="text-xs text-rose-300">{error}</p>}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+            <motion.button
+              type="button"
+              aria-label="Toggle game chat"
+              onClick={handleToggle}
+              onPointerDown={handleBubblePointerDown}
+              onPointerMove={handleBubblePointerMove}
+              onPointerUp={handleBubblePointerUp}
+              onPointerCancel={handleBubblePointerCancel}
+              className={cn(
+                "relative flex h-16 w-16 items-center justify-center rounded-full border shadow-lg transition-all touch-none bg-white text-gray-900 border-gray-300 dark:border-white/20 dark:bg-black/90 dark:text-white",
+                dragOverridePosition && "cursor-grabbing"
+              )}
+              animate={derivedUnread
+                ? { scale: [1, 1.12, 1], rotate: [0, -10, 10, 0] }
+                : { scale: 1, rotate: 0 }}
+              transition={{
+                type: "spring",
+                stiffness: 400,
+                damping: 20,
+                mass: 0.8
+              }}
+              whileTap={{ scale: 0.85 }}
+            >
+              <MessageCircle className="h-7 w-7" />
+              {showUnreadBadge && (
+                <span className="absolute -top-1 -right-1 inline-flex h-6 w-6 items-center justify-center rounded-full bg-[#ff5d73] text-xs font-bold text-white shadow-lg">
+                  !
+                </span>
+              )}
+            </motion.button>
           </motion.div>
         )}
       </AnimatePresence>
-    </div>
+
+      {/* Backdrop for Context Menu */}
+      <AnimatePresence>
+        {contextMenu && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[80] bg-transparent pointer-events-auto"
+            onClick={closeContextMenu}
+          >
+            {/* Context Menu Dropdown */}
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9, y: -10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: -10 }}
+              transition={{ type: "spring", stiffness: 400, damping: 25 }}
+              className="absolute flex flex-col gap-2 p-2 rounded-2xl bg-white/80 dark:bg-black/80 backdrop-blur-xl border border-white/20 shadow-2xl min-w-[180px] select-none"
+              style={{
+                position: "fixed",
+                left: Math.min(contextMenu.rect.left, window.innerWidth - 200),
+                top: Math.min(contextMenu.rect.bottom + 8, window.innerHeight - 200),
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Reactions */}
+              <div className="flex justify-between px-2 py-2 mb-1 bg-white/10 rounded-xl">
+                {[
+                  { icon: Heart, label: "Love" },
+                  { icon: ThumbsUp, label: "Like" },
+                  { icon: Laugh, label: "Haha" },
+                  { icon: Frown, label: "Sad" },
+                  { icon: Angry, label: "Angry" },
+                ].map((reaction, i) => (
+                  <button
+                    key={i}
+                    className="p-1.5 hover:bg-white/20 rounded-full transition-colors text-gray-700 dark:text-white"
+                    onClick={() => handleReaction(reaction.label === "Love" ? "❤️" : reaction.label === "Like" ? "👍" : reaction.label === "Haha" ? "😂" : reaction.label === "Sad" ? "😢" : "😡")}
+                  >
+                    <reaction.icon className="w-5 h-5" />
+                  </button>
+                ))}
+                <button
+                  className="p-1.5 hover:bg-white/20 rounded-full transition-colors text-gray-700 dark:text-white relative"
+                  onClick={() => {
+                    if (isMobile) {
+                      nativeEmojiInputRef.current?.focus();
+                    } else {
+                      setShowEmojiPicker(!showEmojiPicker);
+                    }
+                  }}
+                >
+                  <Plus className="w-5 h-5" />
+                  {/* Hidden native emoji input */}
+                  <input
+                    ref={nativeEmojiInputRef}
+                    type="text"
+                    className="absolute inset-0 opacity-0 w-full h-full pointer-events-none"
+                    style={{ fontSize: "16px" }} // Prevent zoom on iOS
+                    onChange={handleNativeEmojiSelect}
+                    aria-label="Choose emoji"
+                  />
+                </button>
+              </div>
+              {showEmojiPicker && (
+                <div
+                  className="fixed inset-0 z-[90] flex items-center justify-center bg-black/20 backdrop-blur-sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowEmojiPicker(false);
+                  }}
+                >
+                  <div onClick={(e) => e.stopPropagation()}>
+                    <EmojiPicker
+                      onEmojiClick={(emojiData: EmojiClickData) => handleReaction(emojiData.emoji)}
+                      theme={Theme.AUTO}
+                      width={350}
+                      height={450}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Actions */}
+              <div className="flex flex-col gap-1">
+                <button
+                  className="flex items-center gap-3 px-3 py-2.5 text-sm font-medium text-gray-700 dark:text-white hover:bg-white/10 rounded-xl transition-colors w-full text-left"
+                  onClick={() => {
+                    const msg = messages.find(m => m.id === contextMenu.messageId);
+                    if (msg) handleReplyFromMenu(msg);
+                  }}
+                >
+                  <Reply className="w-4 h-4" />
+                  Reply
+                </button>
+                <button
+                  className="flex items-center gap-3 px-3 py-2.5 text-sm font-medium text-gray-700 dark:text-white hover:bg-white/10 rounded-xl transition-colors w-full text-left"
+                  onClick={() => {
+                    const msg = messages.find(m => m.id === contextMenu.messageId);
+                    if (msg) handleCopy(msg.text);
+                  }}
+                >
+                  <Copy className="w-4 h-4" />
+                  Copy Text
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {
+        open && !contextMenu && (
+          <div
+            className="fixed inset-0 z-[65] bg-black/5 md:bg-transparent"
+            onClick={() => setOpen(false)}
+            aria-hidden="true"
+          />
+        )
+      }
+    </div >
   );
 }
