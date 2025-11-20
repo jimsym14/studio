@@ -1,6 +1,11 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 
 import { adminDb } from '@/lib/firebase-admin';
+import {
+  SESSION_LIVE_TOLERANCE_MS,
+  SESSION_LOCK_COLLECTION,
+  SESSION_STALE_MS,
+} from '@/lib/session-lock-constants';
 import type { GameDocument } from '@/types/game';
 
 export const dynamic = 'force-dynamic';
@@ -8,6 +13,7 @@ export const dynamic = 'force-dynamic';
 const STALE_THRESHOLD_MS = 10 * 60 * 1000;
 const ACTIVE_QUERY_LIMIT = 400;
 const COMPLETED_MONTH_LIMIT = 5000;
+const SESSION_LOCK_QUERY_LIMIT = 5000;
 
 interface LobbyRecord extends GameDocument {
   id: string;
@@ -17,6 +23,11 @@ interface LeaderboardEntry {
   playerId: string | null;
   displayName: string;
   count: number;
+}
+
+interface SessionLockRecord {
+  lastSeenAtMillis?: number;
+  expiresAt?: number;
 }
 
 const parseIsoToMs = (value?: string | null) => {
@@ -79,9 +90,11 @@ const formatLeader = (
   };
 };
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     const now = Date.now();
+    const playerIdParam = request.nextUrl.searchParams.get('playerId')?.trim();
+    const playerId = playerIdParam && playerIdParam.length > 0 ? playerIdParam : null;
     const activeCutoffIso = new Date(now - STALE_THRESHOLD_MS).toISOString();
     const nowDate = new Date();
     const monthStart = new Date(Date.UTC(nowDate.getUTCFullYear(), nowDate.getUTCMonth(), 1, 0, 0, 0, 0));
@@ -89,8 +102,9 @@ export async function GET() {
     const todayStart = new Date();
     todayStart.setUTCHours(0, 0, 0, 0);
     const todayStartIso = todayStart.toISOString();
+    const sessionLockCutoff = now - SESSION_STALE_MS;
 
-    const [activeSnapshot, completedSnapshot] = await Promise.all([
+    const [activeSnapshot, completedSnapshot, sessionLocksSnapshot] = await Promise.all([
       adminDb
         .collection('games')
         .where('lastActivityAt', '>=', activeCutoffIso)
@@ -102,6 +116,12 @@ export async function GET() {
         .where('completedAt', '>=', monthStartIso)
         .orderBy('completedAt', 'desc')
         .limit(COMPLETED_MONTH_LIMIT)
+        .get(),
+      adminDb
+        .collection(SESSION_LOCK_COLLECTION)
+        .where('expiresAt', '>=', sessionLockCutoff)
+        .orderBy('expiresAt', 'desc')
+        .limit(SESSION_LOCK_QUERY_LIMIT)
         .get(),
     ]);
 
@@ -122,7 +142,16 @@ export async function GET() {
 
     const playersOnline = new Set<string>();
     activeLobbies.forEach((lobby) => {
-      getActivePlayerIds(lobby).forEach((playerId) => playersOnline.add(playerId));
+      getActivePlayerIds(lobby).forEach((player) => playersOnline.add(player));
+    });
+
+    sessionLocksSnapshot.docs.forEach((doc) => {
+      const data = doc.data() as SessionLockRecord;
+      const expiresAt = typeof data.expiresAt === 'number' ? data.expiresAt : 0;
+      const lastSeenAt = typeof data.lastSeenAtMillis === 'number' ? data.lastSeenAtMillis : 0;
+      if (expiresAt > now && now - lastSeenAt <= SESSION_LIVE_TOLERANCE_MS) {
+        playersOnline.add(doc.id);
+      }
     });
 
     const monthDocs: LobbyRecord[] = completedSnapshot.docs
@@ -158,6 +187,7 @@ export async function GET() {
 
     const topToday = pickTop(todayCounts);
     const topMonth = pickTop(monthCounts);
+    const userWordsSolvedToday = playerId ? todayCounts[playerId] ?? 0 : null;
 
     const leaderIds = Array.from(
       new Set(
@@ -191,6 +221,7 @@ export async function GET() {
         privateRooms: privateRooms.length,
         playersOnline: playersOnline.size,
         wordsSolvedToday,
+        userWordsSolvedToday,
         mostWordsToday: formatLeader(topToday, nameLookup),
         monthlyLegend: formatLeader(topMonth, nameLookup),
       },

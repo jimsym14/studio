@@ -1,6 +1,7 @@
 'use client';
 
-import { LogIn, LogOut, Settings } from 'lucide-react';
+import { useEffect } from 'react';
+import { Globe, LogIn, LogOut, Settings, UserPlus } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 
 import { Button } from '@/components/ui/button';
@@ -8,13 +9,21 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { useFirebase } from '@/components/firebase-provider';
-import { isGuestProfile } from '@/types/user';
+import { useLocalStorage } from '@/hooks/use-local-storage';
+import { isGuestProfile, type UserLanguage } from '@/types/user';
 import { cn } from '@/lib/utils';
+import { useFriendsModal } from '@/components/friends-modal-provider';
+import { useNotifications } from '@/components/notifications-provider';
 
 const initials = (value?: string | null) => {
   if (!value) return 'WM';
@@ -33,7 +42,24 @@ type UserMenuProps = {
 
 export function UserMenu({ className, variant = 'chip' }: UserMenuProps) {
   const router = useRouter();
-  const { user, profile, signOut } = useFirebase();
+  const { user, profile, signOut, savePreferences } = useFirebase();
+  const [language, setLanguage] = useLocalStorage<UserLanguage>('wordmates-lang', 'EN');
+  const { openFriendsModal } = useFriendsModal();
+  const { unreadCount: notificationCount } = useNotifications();
+
+  useEffect(() => {
+    const preferred = profile?.preferences?.language;
+    if (!preferred || preferred === language) return;
+    setLanguage(preferred);
+  }, [language, profile?.preferences?.language, setLanguage]);
+
+  const handleLanguageChange = (value: string) => {
+    const next: UserLanguage = value === 'EL' ? 'EL' : 'EN';
+    setLanguage(next);
+    if (profile && !isGuestProfile(profile)) {
+      void savePreferences({ language: next });
+    }
+  };
 
   if (!user) {
     if (variant === 'icon') {
@@ -75,14 +101,22 @@ export function UserMenu({ className, variant = 'chip' }: UserMenuProps) {
         );
   const avatarClasses = variant === 'icon' ? 'h-10 w-10 border border-border/40 shadow-inner' : 'h-12 w-12 border border-border/40 shadow-inner';
 
+  const showNotificationBadge = !guest && notificationCount > 0;
+  const avatarWrapperClasses = 'relative inline-flex';
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button variant="ghost" className={triggerClasses}>
-          <Avatar className={avatarClasses}>
-            <AvatarImage src={profile?.photoURL ?? undefined} alt={username} />
-            <AvatarFallback>{initials(username)}</AvatarFallback>
-          </Avatar>
+          <span className={avatarWrapperClasses}>
+            <Avatar className={avatarClasses}>
+              <AvatarImage src={profile?.photoURL ?? undefined} alt={username} />
+              <AvatarFallback>{initials(username)}</AvatarFallback>
+            </Avatar>
+            {showNotificationBadge && (
+              <span className="absolute -top-1 -right-1 h-2.5 w-2.5 rounded-full bg-rose-500 ring-2 ring-background dark:ring-background/80" />
+            )}
+          </span>
           {variant === 'chip' ? (
             <div className="flex flex-col text-left leading-tight">
               <p className="text-[0.65rem] uppercase tracking-[0.35em] text-muted-foreground">{statusLabel}</p>
@@ -99,6 +133,23 @@ export function UserMenu({ className, variant = 'chip' }: UserMenuProps) {
           <p className="text-lg font-semibold">{username}</p>
         </div>
         <DropdownMenuSeparator />
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger className="cursor-pointer">
+            <Globe className="h-4 w-4" />
+            Language
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="w-48">
+            <DropdownMenuRadioGroup value={language} onValueChange={handleLanguageChange}>
+              <DropdownMenuRadioItem value="EN">English</DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="EL">Greek</DropdownMenuRadioItem>
+            </DropdownMenuRadioGroup>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem className="cursor-pointer" onClick={openFriendsModal}>
+          <UserPlus className="mr-2 h-4 w-4" />
+          Friends & chats
+        </DropdownMenuItem>
         {!guest && (
           <>
             <DropdownMenuItem className="cursor-pointer" onClick={() => router.push('/settings')}>

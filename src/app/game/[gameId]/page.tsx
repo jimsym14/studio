@@ -32,6 +32,10 @@ import type { GameDocument } from '@/types/game';
 import type { GuessResult, GuessScore } from '@/lib/wordle';
 import { getKeyboardHints, scoreGuess } from '@/lib/wordle';
 import { cn } from '@/lib/utils';
+import { ChatDock } from '@/components/chat-dock';
+import { isGuestProfile } from '@/types/user';
+import type { ChatAvailability, ChatContextDescriptor } from '@/types/social';
+import { runWithFirestoreRetry } from '@/lib/firestore-retry';
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -45,6 +49,7 @@ const firebaseConfig = {
 const keyboardRows = ['qwertyuiop', 'asdfghjkl', 'zxcvbnm'];
 const MATCH_HARD_STOP_MINUTES = 30;
 const REJOIN_MINUTES = 2;
+const DISCONNECT_DRAW_MS = 60_000;
 const confettiPalette = ['#FF7A18', '#FFB800', '#39D98A', '#23BDEE', '#9960FF'];
 type ConfettiPiece = {
   color: string;
@@ -106,6 +111,13 @@ const formatCountdown = (deadline: string | null | undefined, now: number) => {
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
 };
 
+const describeNameGroup = (names: string[], pluralLabel: string) => {
+  if (!names.length) return null;
+  if (names.length === 1) return names[0];
+  if (names.length === 2) return `${names[0]} & ${names[1]}`;
+  return `${names.length} ${pluralLabel}`;
+};
+
 const getModeMeta = (game?: GameDocument | null) => {
   if (!game) return null;
   if (game.gameType === 'solo') {
@@ -148,7 +160,7 @@ const getRandomSoloLossMessage = () => {
 };
 
 export default function GamePage() {
-  const params = useParams();
+  const params = useParams<{ gameId?: string }>();
   const router = useRouter();
   const { db, userId, user, profile } = useFirebase();
   const { toast } = useToast();
@@ -180,14 +192,64 @@ export default function GamePage() {
     entries: Array<{ letter: string; evaluation: GuessScore; delay: number }>;
     duration: number;
   } | null>(null);
+  const [chatComposerFocused, setChatComposerFocused] = useState(false);
   const [revealedTiles, setRevealedTiles] = useState<Record<string, boolean>>({});
+  const [isLocalhost, setIsLocalhost] = useState(false);
+  const [disconnectCountdown, setDisconnectCountdown] = useState<number | null>(null);
+  const [missingPlayerNames, setMissingPlayerNames] = useState<string[]>([]);
   const autoLossTriggeredRef = useRef(false);
   const previousGuessCountRef = useRef(0);
   const initialLoadRef = useRef(true);
   const rejoinHandleRef = useRef(false);
   const hardStopHandleRef = useRef(false);
+  const disconnectTimerRef = useRef<number | null>(null);
+  const disconnectDrawHandledRef = useRef(false);
+  const disconnectDeadlineRef = useRef<number | null>(null);
+  const disconnectCountdownIntervalRef = useRef<number | null>(null);
 
-  const gameId = params.gameId as string;
+  const clearDisconnectCountdown = useCallback(() => {
+    if (disconnectCountdownIntervalRef.current && typeof window !== 'undefined') {
+      window.clearInterval(disconnectCountdownIntervalRef.current);
+    }
+    disconnectCountdownIntervalRef.current = null;
+    disconnectDeadlineRef.current = null;
+    setDisconnectCountdown(null);
+  }, []);
+
+  const updateDisconnectCountdown = useCallback(() => {
+    const deadline = disconnectDeadlineRef.current;
+    if (!deadline) {
+      setDisconnectCountdown(null);
+      return;
+    }
+    const diff = Math.max(0, deadline - Date.now());
+    setDisconnectCountdown(Math.max(0, Math.ceil(diff / 1000)));
+  }, []);
+
+  const startDisconnectCountdown = useCallback(() => {
+    disconnectDeadlineRef.current = Date.now() + DISCONNECT_DRAW_MS;
+    updateDisconnectCountdown();
+    if (typeof window !== 'undefined') {
+      if (disconnectCountdownIntervalRef.current) {
+        window.clearInterval(disconnectCountdownIntervalRef.current);
+      }
+      disconnectCountdownIntervalRef.current = window.setInterval(() => {
+        updateDisconnectCountdown();
+      }, 1000);
+    }
+  }, [updateDisconnectCountdown]);
+
+  const clearDisconnectTimer = useCallback(() => {
+    if (disconnectTimerRef.current && typeof window !== 'undefined') {
+      window.clearTimeout(disconnectTimerRef.current);
+    }
+    disconnectTimerRef.current = null;
+    clearDisconnectCountdown();
+  }, [clearDisconnectCountdown]);
+
+  const gameId = params?.gameId ? String(params.gameId) : '';
+  const guest = profile ? isGuestProfile(profile) : false;
+  const chatAvailability: ChatAvailability = user && !guest ? 'persistent' : 'guest-blocked';
   const isPlayer = Boolean(userId && game?.players?.includes(userId));
   const isSpectator = Boolean(userId && game && !isPlayer);
   const lobbyLink = useMemo(() => {
@@ -219,27 +281,46 @@ export default function GamePage() {
     (game.activePlayers ?? []).forEach((id) => id && ids.add(id));
     (game.turnOrder ?? []).forEach((id) => id && ids.add(id));
     spectatorIds.forEach((id) => id && ids.add(id));
-  Object.keys(game.playerAliases ?? {}).forEach((id) => id && ids.add(id));
+    Object.keys(game.playerAliases ?? {}).forEach((id) => id && ids.add(id));
     if (game.currentTurnPlayerId) ids.add(game.currentTurnPlayerId);
     if (game.winnerId) ids.add(game.winnerId);
     if (game.endedBy) ids.add(game.endedBy);
     return Array.from(ids);
   }, [game, spectatorIds]);
   const { getPlayerName } = usePlayerNames({ db, playerIds: trackedPlayerIds });
-  const resolvePlayerAlias = (playerId?: string | null) => {
-    if (!playerId) return undefined;
-    const fromGame = game?.playerAliases?.[playerId]?.trim();
-    if (fromGame) return fromGame;
-    const resolved = getPlayerName(playerId)?.trim();
-    return resolved && resolved.length ? resolved : undefined;
-  };
-  const formatPlayerLabel = (playerId?: string | null, fallbackPrefix = 'Player') => {
-    if (!playerId) return '—';
-    if (playerId === userId) return profile?.username ?? 'You';
-    const alias = resolvePlayerAlias(playerId);
-    if (alias) return alias;
-    return fallbackPrefix;
-  };
+  const playerAliases = useMemo(() => game?.playerAliases, [JSON.stringify(game?.playerAliases)]);
+
+  const resolvePlayerAlias = useCallback(
+    (playerId?: string | null) => {
+      if (!playerId) return undefined;
+      const fromGame = playerAliases?.[playerId]?.trim();
+      if (fromGame) return fromGame;
+      const resolved = getPlayerName(playerId)?.trim();
+      return resolved && resolved.length ? resolved : undefined;
+    },
+    [playerAliases, getPlayerName]
+  );
+  const formatPlayerLabel = useCallback(
+    (playerId?: string | null, fallbackPrefix = 'Player') => {
+      if (!playerId) return '—';
+      if (playerId === userId) return profile?.username ?? 'You';
+      const alias = resolvePlayerAlias(playerId);
+      if (alias) return alias;
+      return fallbackPrefix;
+    },
+    [profile?.username, resolvePlayerAlias, userId]
+  );
+  const otherPlayerIds = useMemo(
+    () => (game?.players ?? []).filter((playerId): playerId is string => Boolean(playerId) && playerId !== userId),
+    [game?.players, userId]
+  );
+  const otherPlayerNames = otherPlayerIds.map((playerId) => formatPlayerLabel(playerId, isCoopMode ? 'Teammate' : 'Opponent'));
+  const rivalGroupLabel = !isCoopMode ? describeNameGroup(otherPlayerNames, 'rivals') : null;
+  const teammateGroupLabel = isCoopMode ? describeNameGroup(otherPlayerNames, 'teammates') : null;
+  const rivalWinnerLabel =
+    !isCoopMode && game?.winnerId && game.winnerId !== userId ? formatPlayerLabel(game.winnerId, 'Opponent') : null;
+  const teammateWinnerLabel =
+    isCoopMode && game?.winnerId && game.winnerId !== userId ? formatPlayerLabel(game.winnerId, 'Teammate') : null;
   const turnStatusCopy = (() => {
     if (!isMultiplayerGame) return null;
     if (!hasLockedTurn) {
@@ -248,6 +329,22 @@ export default function GamePage() {
     }
     return activeTurnPlayerId === userId ? `It's your turn!` : `It's not your turn.`;
   })();
+  const chatParticipantCount = (game?.players ?? []).filter(Boolean).length;
+  const shouldShowChatDock = Boolean(game && chatParticipantCount >= 2);
+  const chatDockContext = useMemo<ChatContextDescriptor>(() => ({
+    scope: 'game',
+    gameId,
+    gameName: resolvePlayerAlias(game?.creatorId ?? undefined) ?? `Match ${displayedGameId}`,
+  }), [gameId, game?.creatorId, displayedGameId, resolvePlayerAlias]);
+  const chatParticipants = (game?.players ?? [])
+    .filter((playerId): playerId is string => Boolean(playerId))
+    .slice(0, 2)
+    .map((playerId) => ({
+      id: playerId,
+      displayName: formatPlayerLabel(playerId),
+      photoURL: playerId === userId ? profile?.photoURL ?? null : null,
+      isSelf: playerId === userId,
+    }));
 
   useEffect(() => {
     if (!keyPulse) return undefined;
@@ -396,13 +493,12 @@ export default function GamePage() {
     return () => unsubscribe();
   }, [db, gameId, router, toast, userId]);
 
-  useEffect(() => {
+  const registerGamePresence = useCallback(async () => {
     if (!db || !userId || !gameId || !isPlayer) return;
     const gameRef = doc(db, 'games', gameId);
-
-    const registerPresence = async () => {
-      try {
-        await runTransaction(db, async (transaction) => {
+    try {
+      await runWithFirestoreRetry(() =>
+        runTransaction(db, async (transaction) => {
           const snapshot = await transaction.get(gameRef);
           if (!snapshot.exists()) return;
           const data = snapshot.data() as GameDocument;
@@ -414,15 +510,19 @@ export default function GamePage() {
             lobbyClosesAt: null,
             lastActivityAt: nowIso,
           });
-        });
-      } catch (error) {
-        console.error('Failed to register game presence', error);
-      }
-    };
+        })
+      );
+    } catch (error) {
+      console.error('Failed to register game presence', error);
+    }
+  }, [db, gameId, isPlayer, userId]);
 
-    const unregisterPresence = async () => {
-      try {
-        await runTransaction(db, async (transaction) => {
+  const unregisterGamePresence = useCallback(async () => {
+    if (!db || !userId || !gameId || !isPlayer) return;
+    const gameRef = doc(db, 'games', gameId);
+    try {
+      await runWithFirestoreRetry(() =>
+        runTransaction(db, async (transaction) => {
           const snapshot = await transaction.get(gameRef);
           if (!snapshot.exists()) return;
           const data = snapshot.data() as GameDocument;
@@ -435,32 +535,53 @@ export default function GamePage() {
             updatePayload.lobbyClosesAt = addMinutesIso(nowIso, REJOIN_MINUTES);
           }
           transaction.update(gameRef, updatePayload);
-        });
-      } catch (error) {
-        console.error('Failed to unregister game presence', error);
-      }
-    };
+        })
+      );
+    } catch (error) {
+      console.error('Failed to unregister game presence', error);
+    }
+  }, [db, gameId, isPlayer, userId]);
 
-    void registerPresence();
+  useEffect(() => {
+    if (!db || !userId || !gameId || !isPlayer) return;
+
+    void registerGamePresence();
 
     const handleBeforeUnload = () => {
-      void unregisterPresence();
+      void unregisterGamePresence();
     };
 
     window.addEventListener('beforeunload', handleBeforeUnload);
 
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
-      void unregisterPresence();
+      void unregisterGamePresence();
     };
-  }, [db, gameId, userId, isPlayer]);
+  }, [db, gameId, isPlayer, registerGamePresence, unregisterGamePresence, userId]);
 
   useEffect(() => {
-    if (!db || !game || !gameId || game.status !== 'in_progress') return;
-    if (game.matchHardStopAt) return;
-    void updateDoc(doc(db, 'games', gameId), {
-      matchHardStopAt: addMinutesIso(new Date().toISOString(), MATCH_HARD_STOP_MINUTES),
-    }).catch((error) => console.error('Failed to seed match hard stop', error));
+    if (!isPlayer || !userId) return;
+    const activeList = game?.activePlayers ?? [];
+    if (!Array.isArray(activeList)) return;
+    if (activeList.includes(userId)) return;
+    void registerGamePresence();
+  }, [game?.activePlayers, isPlayer, registerGamePresence, userId]);
+
+  useEffect(() => {
+    if (!db || !game || !gameId || game.status !== 'in_progress' || game.matchHardStopAt) return;
+    const gameRef = doc(db, 'games', gameId);
+    void runWithFirestoreRetry(() =>
+      runTransaction(db, async (transaction) => {
+        const snapshot = await transaction.get(gameRef);
+        if (!snapshot.exists()) return;
+        const data = snapshot.data() as GameDocument;
+        if (data.matchHardStopAt) return;
+        const nowIso = new Date().toISOString();
+        transaction.update(gameRef, {
+          matchHardStopAt: addMinutesIso(nowIso, MATCH_HARD_STOP_MINUTES),
+        });
+      })
+    ).catch((error) => console.error('Failed to seed match hard stop', error));
   }, [db, game, gameId]);
 
   useEffect(() => {
@@ -521,6 +642,85 @@ export default function GamePage() {
       void handleTimeout();
     }
   }, [db, game?.lobbyClosesAt, game?.status, gameId, now, router, toast]);
+
+  useEffect(() => {
+    if (!db || !game || !isMultiplayerGame || game.status !== 'in_progress') {
+      clearDisconnectTimer();
+      setMissingPlayerNames((prev) => (prev.length ? [] : prev));
+      disconnectDrawHandledRef.current = false;
+      return;
+    }
+
+    const allPlayers = (game.players ?? []).filter((id): id is string => Boolean(id));
+    const activeSet = new Set((game.activePlayers ?? []).filter(Boolean));
+    const activeCount = activeSet.size;
+    const hasMissingPlayer = allPlayers.length >= 2 && activeCount > 0 && activeCount < allPlayers.length;
+
+    if (!hasMissingPlayer) {
+      clearDisconnectTimer();
+      setMissingPlayerNames((prev) => (prev.length ? [] : prev));
+      disconnectDrawHandledRef.current = false;
+      return;
+    }
+
+    const missingIds = allPlayers.filter((playerId) => !activeSet.has(playerId));
+    const nextMissingNames = missingIds.map((playerId) => formatPlayerLabel(playerId, 'Player'));
+    setMissingPlayerNames((prev) => {
+      if (prev.length === nextMissingNames.length && prev.every((name, index) => name === nextMissingNames[index])) {
+        return prev;
+      }
+      return nextMissingNames;
+    });
+
+    if (disconnectDrawHandledRef.current || disconnectTimerRef.current || typeof window === 'undefined') {
+      return;
+    }
+
+    startDisconnectCountdown();
+    disconnectTimerRef.current = window.setTimeout(() => {
+      disconnectTimerRef.current = null;
+      disconnectDrawHandledRef.current = true;
+      clearDisconnectCountdown();
+      const finalizeDisconnectDraw = async () => {
+        try {
+          await updateDoc(doc(db, 'games', gameId), {
+            status: 'completed',
+            completedAt: new Date().toISOString(),
+            winnerId: null,
+            completionMessage: 'Draw! Match ended after a player disconnected for too long.',
+            turnDeadline: null,
+            matchDeadline: null,
+            lobbyClosesAt: null,
+            inactivityClosesAt: null,
+            matchHardStopAt: null,
+            endedBy: 'system_disconnect',
+          });
+          toast({ title: 'Match ended in a draw', description: 'A player disconnected for over a minute.' });
+        } catch (error) {
+          console.error('Failed to finish disconnect draw', error);
+          disconnectDrawHandledRef.current = false;
+        } finally {
+          router.push('/');
+        }
+      };
+      void finalizeDisconnectDraw();
+    }, DISCONNECT_DRAW_MS);
+
+    return () => {
+      clearDisconnectTimer();
+    };
+  }, [
+    clearDisconnectCountdown,
+    clearDisconnectTimer,
+    db,
+    formatPlayerLabel,
+    game,
+    gameId,
+    isMultiplayerGame,
+    router,
+    startDisconnectCountdown,
+    toast,
+  ]);
 
   useEffect(() => {
     if (!db || !game || game.status !== 'in_progress') return;
@@ -630,7 +830,7 @@ export default function GamePage() {
   const handleSubmit = useCallback(async () => {
     if (!db || !game || !gameId || !userId || !isPlayer || isSubmitting) return;
     if (!isMyTurn && game.gameType === 'multiplayer') {
-      toast({ variant: 'destructive', title: 'Βάλε παύση', description: 'Περίμενε τη σειρά σου για να παίξεις.' });
+      toast({ variant: 'destructive', title: 'Not your turn', description: 'Wait for your turn before playing.' });
       return;
     }
     const guess = currentGuess.trim().toLowerCase();
@@ -694,8 +894,8 @@ export default function GamePage() {
         updatePayload.completionMessage = isWin
           ? game.gameType === 'multiplayer'
             ? game.multiplayerMode === 'co-op'
-              ? 'Ομάδα, μπράβο! Βρήκατε τη λέξη.'
-              : 'Νίκη! Έπιασες πρώτος τη λέξη.'
+              ? 'Team win! You all found the word.'
+              : 'Victory! You grabbed the word first.'
             : 'Word cracked! Celebrate the streak.'
           : buildLossMessage('No more guesses left.');
         updatePayload.turnDeadline = null;
@@ -717,7 +917,7 @@ export default function GamePage() {
       if (isWin) {
         toast({
           title: isCoopMode ? 'Team victory!' : 'Victory!',
-          description: isCoopMode ? 'Η ομάδα σας βρήκε τη λέξη.' : 'You guessed the word.',
+          description: isCoopMode ? 'Your team found the word.' : 'You guessed the word.',
         });
       } else if (outOfAttempts) {
         toast({ title: 'Out of tries', description: `Answer: ${game.solution.toUpperCase()}` });
@@ -749,8 +949,18 @@ export default function GamePage() {
   useEffect(() => {
     if (!game || game.status !== 'in_progress' || !isPlayer || !isMyTurn) return;
 
+    const isTypingTarget = (event: KeyboardEvent) => {
+      if (chatComposerFocused) return true;
+      const target = event.target as HTMLElement | null;
+      if (!target) return false;
+      const tag = target.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+      return target.isContentEditable;
+    };
+
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (isTypingTarget(event)) return;
       if (event.key === 'Enter') {
         event.preventDefault();
         void handleSubmit();
@@ -770,7 +980,7 @@ export default function GamePage() {
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [addLetter, game, handleSubmit, isMyTurn, isPlayer, removeLetter]);
+  }, [addLetter, chatComposerFocused, game, handleSubmit, isMyTurn, isPlayer, removeLetter]);
 
   const handleCopyLobbyLink = useCallback(async () => {
     try {
@@ -926,13 +1136,20 @@ export default function GamePage() {
   const baseResultHeading = (() => {
     if (!game) return 'Match complete';
     if (isCoopMode && game.winnerId) {
-      return game.winnerId === userId ? 'You cracked it!' : 'Team victory!';
+      if (game.winnerId === userId) {
+        return teammateGroupLabel ? `Victory with ${teammateGroupLabel}` : 'You cracked it!';
+      }
+      return `${teammateWinnerLabel ?? 'Your teammate'} cracked it!`;
     }
     if (game.gameType === 'solo' && isPlayer && game.winnerId !== userId) {
       return 'You lost';
     }
     if (game.winnerId) {
-      return game.winnerId === userId ? 'You cracked it!' : 'Rival guessed the word';
+      return game.winnerId === userId
+        ? rivalGroupLabel
+          ? `You beat ${rivalGroupLabel}`
+          : 'You cracked it!'
+        : `${formatPlayerLabel(game.winnerId, 'Opponent')} guessed the word`;
     }
     return 'No winner this round';
   })();
@@ -974,6 +1191,30 @@ export default function GamePage() {
   const didWin = debugOverrides?.didWin ?? actualDidWin;
   const didLose = debugOverrides?.didLose ?? actualDidLose;
   const resultHeading = debugOverrides?.heading ?? baseResultHeading;
+  const defaultWinMessage = (() => {
+    if (isCoopMode) {
+      if (teammateGroupLabel) {
+        return `You cracked it with ${teammateGroupLabel}.`;
+      }
+      return 'Word cracked! Celebrate the streak.';
+    }
+    if (rivalGroupLabel) {
+      return `You stayed ahead of ${rivalGroupLabel} and locked in the word.`;
+    }
+    return 'Word cracked! Celebrate the streak.';
+  })();
+  const defaultLossMessage = (() => {
+    if (isCoopMode) {
+      if (teammateWinnerLabel) {
+        return `${teammateWinnerLabel} sealed the win for your team.`;
+      }
+      return 'Another squad solved it first.';
+    }
+    if (rivalWinnerLabel) {
+      return `${rivalWinnerLabel} locked in the answer first.`;
+    }
+    return 'Another player solved it before you did.';
+  })();
   const confettiPieces = useMemo<ConfettiPiece[]>(() => {
     if (!didWin) return [];
     const seededRandom = (index: number, offset: number) => {
@@ -1003,15 +1244,13 @@ export default function GamePage() {
       : '!border !border-white/40 !text-white hover:!bg-white/10 dark:!text-white'
   );
   const completionBodyText = debugOverrides?.message
-    ?? (game?.completionMessage ?? (didWin ? 'Word cracked! Celebrate the streak.' : 'Thanks for playing.'));
+    ?? (game?.completionMessage ?? (didWin ? defaultWinMessage : defaultLossMessage));
   const debugButtons: Array<{ label: string; variant: Exclude<DebugResultVariant, null> }> = [
     { label: 'Preview Win', variant: 'playerWin' },
     { label: 'Preview Loss', variant: 'playerLoss' },
     { label: 'Preview Rival Win', variant: 'rivalWin' },
     { label: 'Preview No Winner', variant: 'noWinner' },
   ];
-
-  const [isLocalhost, setIsLocalhost] = useState(false);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1047,27 +1286,27 @@ export default function GamePage() {
 
   const endButton = game?.gameType === 'solo'
     ? (
-        <Button
-          className={sharedEndButtonClasses}
-          onClick={handleSoloEnd}
-          disabled={!isPlayer || game?.status !== 'in_progress'}
-          aria-label="End game"
-        >
-          <DoorOpen className="h-4 w-4" />
-          <span className="hidden sm:inline">End game</span>
-        </Button>
-      )
+      <Button
+        className={sharedEndButtonClasses}
+        onClick={handleSoloEnd}
+        disabled={!isPlayer || game?.status !== 'in_progress'}
+        aria-label="End game"
+      >
+        <DoorOpen className="h-4 w-4" />
+        <span className="hidden sm:inline">End game</span>
+      </Button>
+    )
     : (
-        <Button
-          className={sharedEndButtonClasses}
-          onClick={handleVoteToEnd}
-          disabled={!isPlayer || hasVotedToEnd || game?.status !== 'in_progress'}
-          aria-label={hasVotedToEnd ? 'Vote sent' : 'Vote to end'}
-        >
-          <DoorOpen className="h-4 w-4" />
-          <span className="hidden sm:inline">{hasVotedToEnd ? 'Vote sent' : 'Vote to end'}</span>
-        </Button>
-      );
+      <Button
+        className={sharedEndButtonClasses}
+        onClick={handleVoteToEnd}
+        disabled={!isPlayer || hasVotedToEnd || game?.status !== 'in_progress'}
+        aria-label={hasVotedToEnd ? 'Vote sent' : 'Vote to end'}
+      >
+        <DoorOpen className="h-4 w-4" />
+        <span className="hidden sm:inline">{hasVotedToEnd ? 'Vote sent' : 'Vote to end'}</span>
+      </Button>
+    );
 
   const modeMeta = getModeMeta(game);
 
@@ -1121,45 +1360,45 @@ export default function GamePage() {
           </div>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src="/logo.png" alt="WordMates" className="mx-auto h-20 w-auto drop-shadow-xl" />
-            <span
-              className="pointer-events-none absolute inset-0 opacity-25"
-              style={{
-                backgroundImage:
-                  'radial-gradient(circle at 15% 20%, rgba(255,255,255,0.18) 0%, transparent 35%), radial-gradient(circle at 65% 10%, rgba(0,0,0,0.18) 0%, transparent 40%), radial-gradient(circle at 10% 85%, rgba(0,0,0,0.12) 0%, transparent 32%)',
-              }}
-            />
-            <div className="relative top-5 flex w-full min-w-0 flex-nowrap items-stretch gap-3 overflow-x-auto rounded-[40px] border border-[hsla(var(--panel-border)/0.7)] bg-gradient-to-r from-white via-[hsl(var(--panel-neutral))] to-[hsl(var(--panel-warm))] px-4 py-4 text-left shadow-[0_25px_65px_rgba(0,0,0,0.18)] [scrollbar-gutter:stable] sm:overflow-visible dark:border-white/10 dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12]">
-              <div className="flex min-w-max flex-1 items-center gap-3 pr-2">
-                <div className="inline-flex items-center gap-2 rounded-full border border-[hsla(var(--primary)/0.45)] bg-white px-3 py-1.5 text-left text-foreground shadow-[0_18px_35px_rgba(255,140,0,0.15)] dark:border-[hsla(var(--primary)/0.45)] dark:bg-[hsl(var(--card))] dark:text-[hsl(var(--primary-foreground))]">
-                  <span className="text-[0.6rem] font-semibold uppercase tracking-[0.3em] text-muted-foreground sm:text-[11px]">
-                    Game ID
-                  </span>
-                  <span
-                    className="inline-flex items-center rounded-full bg-[hsl(var(--primary))] px-2.5 py-1 font-mono text-[0.58rem] tracking-[0.25em] text-[hsl(var(--primary-foreground))] shadow-[0_10px_25px_rgba(255,140,0,0.35)] sm:px-3 sm:text-xs dark:bg-white/10 dark:text-[hsl(var(--primary))] dark:shadow-none"
-                    title={displayedGameId}
-                  >
-                    <span className="hidden truncate sm:inline">{displayedGameId}</span>
-                    <span className="inline sm:hidden">{compactGameId}</span>
-                  </span>
-                  <Button
-                    type="button"
-                    size="icon"
-                    variant="ghost"
-                    onClick={handleCopyLobbyLink}
-                    className="h-8 w-8 rounded-full border border-[hsla(var(--primary)/0.4)] bg-[hsl(var(--panel-neutral))] text-[hsl(var(--primary))] hover:bg-[hsl(var(--panel-neutral)/0.9)] dark:border-[hsla(var(--primary)/0.35)] dark:bg-[hsl(var(--card))] dark:text-[hsl(var(--primary-foreground))]"
-                    aria-label="Copy lobby link"
-                  >
-                    <Copy className="h-4 w-4" />
-                  </Button>
-                </div>
-              </div>
-              <div className="flex flex-shrink-0 items-center justify-center whitespace-nowrap">
-                {endButton}
+          <span
+            className="pointer-events-none absolute inset-0 opacity-25"
+            style={{
+              backgroundImage:
+                'radial-gradient(circle at 15% 20%, rgba(255,255,255,0.18) 0%, transparent 35%), radial-gradient(circle at 65% 10%, rgba(0,0,0,0.18) 0%, transparent 40%), radial-gradient(circle at 10% 85%, rgba(0,0,0,0.12) 0%, transparent 32%)',
+            }}
+          />
+          <div className="relative top-5 flex w-full min-w-0 flex-nowrap items-stretch gap-3 overflow-x-auto rounded-[40px] border border-[hsla(var(--panel-border)/0.7)] bg-gradient-to-r from-white via-[hsl(var(--panel-neutral))] to-[hsl(var(--panel-warm))] px-4 py-4 text-left shadow-[0_25px_65px_rgba(0,0,0,0.18)] [scrollbar-gutter:stable] sm:overflow-visible dark:border-white/10 dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12]">
+            <div className="flex min-w-max flex-1 items-center gap-3 pr-2">
+              <div className="inline-flex items-center gap-2 rounded-full border border-[hsla(var(--primary)/0.45)] bg-white px-3 py-1.5 text-left text-foreground shadow-[0_18px_35px_rgba(255,140,0,0.15)] dark:border-[hsla(var(--primary)/0.45)] dark:bg-[hsl(var(--card))] dark:text-[hsl(var(--primary-foreground))]">
+                <span className="text-[0.6rem] font-semibold uppercase tracking-[0.3em] text-muted-foreground sm:text-[11px]">
+                  Game ID
+                </span>
+                <span
+                  className="inline-flex items-center rounded-full bg-[hsl(var(--primary))] px-2.5 py-1 font-mono text-[0.58rem] tracking-[0.25em] text-[hsl(var(--primary-foreground))] shadow-[0_10px_25px_rgba(255,140,0,0.35)] sm:px-3 sm:text-xs dark:bg-white/10 dark:text-[hsl(var(--primary))] dark:shadow-none"
+                  title={displayedGameId}
+                >
+                  <span className="hidden truncate sm:inline">{displayedGameId}</span>
+                  <span className="inline sm:hidden">{compactGameId}</span>
+                </span>
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  onClick={handleCopyLobbyLink}
+                  className="h-8 w-8 rounded-full border border-[hsla(var(--primary)/0.4)] bg-[hsl(var(--panel-neutral))] text-[hsl(var(--primary))] hover:bg-[hsl(var(--panel-neutral)/0.9)] dark:border-[hsla(var(--primary)/0.35)] dark:bg-[hsl(var(--card))] dark:text-[hsl(var(--primary-foreground))]"
+                  aria-label="Copy lobby link"
+                >
+                  <Copy className="h-4 w-4" />
+                </Button>
               </div>
             </div>
-            <div className="relative flex flex-wrap gap-2">
-              
+            <div className="flex flex-shrink-0 items-center justify-center whitespace-nowrap">
+              {endButton}
             </div>
+          </div>
+          <div className="relative flex flex-wrap gap-2">
+
+          </div>
         </div>
 
         <div className="mt-10 space-y-8">
@@ -1178,104 +1417,104 @@ export default function GamePage() {
               )}
             />
             <div className="relative space-y-0">
-            <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-              <div className="flex flex-wrap items-center gap-2 ">
-                {modeMeta && (
-                  <span className="inline-flex items-center gap-2 rounded-full border border-transparent bg-[hsl(var(--primary))] px-4 py-2 text-xs font-semibold uppercase tracking-[0.25em] text-[hsl(var(--primary-foreground))] shadow-[0_15px_35px_rgba(255,140,0,0.3)] dark:border-[hsla(var(--primary)/0.45)] dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12] dark:text-muted-foreground dark:shadow-none">
-                    <modeMeta.icon className="h-4 w-4" />
-                    <span>{modeMeta.label}</span>
+              <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="flex flex-wrap items-center gap-2 ">
+                  {modeMeta && (
+                    <span className="inline-flex items-center gap-2 rounded-full border border-transparent bg-[hsl(var(--primary))] px-4 py-2 text-xs font-semibold uppercase tracking-[0.25em] text-[hsl(var(--primary-foreground))] shadow-[0_15px_35px_rgba(255,140,0,0.3)] dark:border-[hsla(var(--primary)/0.45)] dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12] dark:text-muted-foreground dark:shadow-none">
+                      <modeMeta.icon className="h-4 w-4" />
+                      <span>{modeMeta.label}</span>
+                    </span>
+                  )}
+                  <span className="inline-flex items-center gap-2 rounded-full border border-transparent bg-[hsl(var(--primary))] px-4 py-2 text-sm text-[hsl(var(--primary-foreground))] shadow-[0_12px_30px_rgba(255,140,0,0.28)] dark:border-[hsla(var(--primary)/0.45)] dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12] dark:text-muted-foreground dark:shadow-none">
+                    <Users className="h-4 w-4" />
+                    <span className="font-mono text-base text-[hsl(var(--primary-foreground))] dark:text-foreground">{game.players.length}</span>
                   </span>
-                )}
-                <span className="inline-flex items-center gap-2 rounded-full border border-transparent bg-[hsl(var(--primary))] px-4 py-2 text-sm text-[hsl(var(--primary-foreground))] shadow-[0_12px_30px_rgba(255,140,0,0.28)] dark:border-[hsla(var(--primary)/0.45)] dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12] dark:text-muted-foreground dark:shadow-none">
-                  <Users className="h-4 w-4" />
-                  <span className="font-mono text-base text-[hsl(var(--primary-foreground))] dark:text-foreground">{game.players.length}</span>
-                </span>
-                {isMultiplayerGame && (
-                  <span className="inline-flex items-center gap-2 rounded-full border border-transparent bg-[hsl(var(--accent))] px-4 py-2 text-xs font-semibold uppercase tracking-[0.25em] text-[hsl(var(--accent-foreground))] shadow-[0_12px_32px_rgba(16,185,129,0.32)] dark:border-[hsla(var(--accent)/0.45)] dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12] dark:text-muted-foreground dark:shadow-none">
-                    <Clock3 className="h-4 w-4" />
-                    <span>{turnStatusCopy ?? 'Waiting'}</span>
-                  </span>
+                  {isMultiplayerGame && (
+                    <span className="inline-flex items-center gap-2 rounded-full border border-transparent bg-[hsl(var(--accent))] px-4 py-2 text-xs font-semibold uppercase tracking-[0.25em] text-[hsl(var(--accent-foreground))] shadow-[0_12px_32px_rgba(16,185,129,0.32)] dark:border-[hsla(var(--accent)/0.45)] dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12] dark:text-muted-foreground dark:shadow-none">
+                      <Clock3 className="h-4 w-4" />
+                      <span>{turnStatusCopy ?? 'Waiting'}</span>
+                    </span>
+                  )}
+                </div>
+                {timerPills.length > 0 && (
+                  <div className="flex flex-wrap items-start gap-2 sm:justify-end">
+                    {timerPills.map(({ label, value }) => (
+                      <span
+                        key={`board-timer-${label}`}
+                        className="inline-flex items-center gap-3 rounded-full border border-transparent bg-[hsl(var(--accent))] px-4 py-2 text-[hsl(var(--accent-foreground))] shadow-[0_12px_32px_rgba(16,185,129,0.32)] dark:border-[hsla(var(--accent)/0.5)] dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12] dark:text-foreground dark:shadow-none"
+                      >
+                        {(() => {
+                          const TimerIcon = timerIconLookup[label as 'Match' | 'Turn'] ?? Clock3;
+                          return (
+                            <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-white/20 text-white dark:bg-white/10 dark:text-[hsl(var(--accent))]">
+                              <TimerIcon className="h-4 w-4" />
+                              <span className="sr-only">{label}</span>
+                            </span>
+                          );
+                        })()}
+                        <span className="font-mono text-sm tracking-[0.2em] text-[hsl(var(--accent-foreground))] dark:text-foreground">{value}</span>
+                      </span>
+                    ))}
+                  </div>
                 )}
               </div>
-              {timerPills.length > 0 && (
-                <div className="flex flex-wrap items-start gap-2 sm:justify-end">
-                  {timerPills.map(({ label, value }) => (
-                    <span
-                      key={`board-timer-${label}`}
-                      className="inline-flex items-center gap-3 rounded-full border border-transparent bg-[hsl(var(--accent))] px-4 py-2 text-[hsl(var(--accent-foreground))] shadow-[0_12px_32px_rgba(16,185,129,0.32)] dark:border-[hsla(var(--accent)/0.5)] dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12] dark:text-foreground dark:shadow-none"
+              <div className="grid gap-2 ">
+                {boardRows.map((row, rowIndex) => {
+                  const isActiveRow = row.state === 'active';
+                  return (
+                    <div
+                      key={rowIndex}
+                      className="mx-auto grid w-full max-w-[min(92vw,420px)] gap-2 sm:gap-3"
+                      style={{ gridTemplateColumns: `repeat(${game.wordLength}, minmax(0, 1fr))` }}
                     >
-                      {(() => {
-                        const TimerIcon = timerIconLookup[label as 'Match' | 'Turn'] ?? Clock3;
-                        return (
-                          <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-white/20 text-white dark:bg-white/10 dark:text-[hsl(var(--accent))]">
-                            <TimerIcon className="h-4 w-4" />
-                            <span className="sr-only">{label}</span>
-                          </span>
+                      {row.letters.map((letter, letterIndex) => {
+                        const evaluation = row.evaluations[letterIndex] as GuessScore | null;
+                        const shouldReveal = Boolean(
+                          recentRevealMeta && row.state === 'submitted' && rowIndex === recentRevealMeta.rowIndex
                         );
-                      })()}
-                      <span className="font-mono text-sm tracking-[0.2em] text-[hsl(var(--accent-foreground))] dark:text-foreground">{value}</span>
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-            <div className="grid gap-2 ">
-              {boardRows.map((row, rowIndex) => {
-                const isActiveRow = row.state === 'active';
-                return (
-                  <div
-                    key={rowIndex}
-                    className="mx-auto grid w-full max-w-[min(92vw,420px)] gap-2 sm:gap-3"
-                    style={{ gridTemplateColumns: `repeat(${game.wordLength}, minmax(0, 1fr))` }}
-                  >
-                    {row.letters.map((letter, letterIndex) => {
-                      const evaluation = row.evaluations[letterIndex] as GuessScore | null;
-                      const shouldReveal = Boolean(
-                        recentRevealMeta && row.state === 'submitted' && rowIndex === recentRevealMeta.rowIndex
-                      );
-                      const tileDelayMs = letterIndex * 140;
-                      const tileStyle: CSSProperties | undefined = shouldReveal
-                        ? {
+                        const tileDelayMs = letterIndex * 140;
+                        const tileStyle: CSSProperties | undefined = shouldReveal
+                          ? {
                             ['--tile-delay' as string]: `${tileDelayMs}ms`,
                             ['--tile-feedback-delay' as string]: `${tileDelayMs + 360}ms`,
                           }
-                        : undefined;
-                      const tilePulseActive = Boolean(
-                        isActiveRow && tilePulse && tilePulse.index === letterIndex
-                      );
-                      const tileKey = `${rowIndex}-${letterIndex}`;
-                      const evaluationReady = Boolean(
-                        evaluation && (!shouldReveal || revealedTiles[tileKey])
-                      );
-                      const displayEvaluation = evaluationReady ? evaluation : null;
-                      return (
-                        <div
-                          key={`${rowIndex}-${letterIndex}`}
-                          style={tileStyle}
-                          className={cn(
-                            'relative flex aspect-square items-center justify-center rounded-3xl border text-2xl font-semibold uppercase tracking-wider transition-all duration-200',
-                            !displayEvaluation &&
+                          : undefined;
+                        const tilePulseActive = Boolean(
+                          isActiveRow && tilePulse && tilePulse.index === letterIndex
+                        );
+                        const tileKey = `${rowIndex}-${letterIndex}`;
+                        const evaluationReady = Boolean(
+                          evaluation && (!shouldReveal || revealedTiles[tileKey])
+                        );
+                        const displayEvaluation = evaluationReady ? evaluation : null;
+                        return (
+                          <div
+                            key={`${rowIndex}-${letterIndex}`}
+                            style={tileStyle}
+                            className={cn(
+                              'relative flex aspect-square items-center justify-center rounded-3xl border text-2xl font-semibold uppercase tracking-wider transition-all duration-200',
+                              !displayEvaluation &&
                               (isActiveRow
                                 ? 'border-[hsla(var(--primary)/0.35)] bg-white/40 text-[#262624] shadow-[inset_4px_4px_15px_rgba(255,255,255,0.5),inset_-4px_-4px_12px_rgba(0,0,0,0.08)] dark:border-[hsla(var(--primary)/0.4)] dark:bg-white/5 dark:text-[#ffe8d0]'
                                 : 'border-[hsla(var(--primary)/0.25)] bg-white/30 text-[#401503] dark:border-white/8 dark:bg-[#10111a]/70 dark:text-[#cbc7c1]'),
-                            displayEvaluation && displayEvaluation !== 'absent' && 'border-transparent',
-                            displayEvaluation === 'absent' && 'border-[hsl(var(--panel-border))] dark:border-white/15',
-                            displayEvaluation && tileTone[displayEvaluation],
-                            isActiveRow && !displayEvaluation && 'shadow-[inset_4px_4px_10px_rgba(0,0,0,0.22),inset_-4px_-4px_12px_rgba(255,255,255,0.2)]',
-                            shouldReveal && 'tile-animate-reveal',
-                            shouldReveal && evaluation === 'correct' && 'tile-animate-bounce',
-                            shouldReveal && evaluation === 'present' && 'tile-animate-shake',
-                            tilePulseActive && 'animate-tile-pop'
-                          )}
-                        >
-                          {letter.trim()}
-                        </div>
-                      );
-                    })}
-                  </div>
-                );
-              })}
-            </div>
+                              displayEvaluation && displayEvaluation !== 'absent' && 'border-transparent',
+                              displayEvaluation === 'absent' && 'border-[hsl(var(--panel-border))] dark:border-white/15',
+                              displayEvaluation && tileTone[displayEvaluation],
+                              isActiveRow && !displayEvaluation && 'shadow-[inset_4px_4px_10px_rgba(0,0,0,0.22),inset_-4px_-4px_12px_rgba(255,255,255,0.2)]',
+                              shouldReveal && 'tile-animate-reveal',
+                              shouldReveal && evaluation === 'correct' && 'tile-animate-bounce',
+                              shouldReveal && evaluation === 'present' && 'tile-animate-shake',
+                              tilePulseActive && 'animate-tile-pop'
+                            )}
+                          >
+                            {letter.trim()}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           </div>
 
@@ -1294,100 +1533,112 @@ export default function GamePage() {
               )}
             />
             <div className="relative space-y-2.5">
-            {isPlayer && game.status === 'in_progress' && canInteract && (
-              <div>
-                <div className="flex flex-wrap justify-center gap-2">
-                  {currentGuessPreview.split('').map((letter: string, index: number) => (
-                    <div
-                      key={`preview-${index}`}
-                      className="h-11 w-11 rounded-2xl border border-white/50 bg-white/40 text-center text-lg font-semibold uppercase leading-[2.75rem] text-[#2a1409] shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] backdrop-blur dark:border-white/15 dark:bg-white/10 dark:text-white"
-                    >
-                      {letter.trim()}
-                    </div>
-                  ))}
-                </div>
-                <div className="mt-4 h-px w-full bg-white/50 dark:bg-white/10" />
-              </div>
-            )}
-            {turnStatusCopy && (
-              <p className="text-center text-xs font-semibold uppercase tracking-[0.35em] text-white/80 dark:text-white/60">
-                {turnStatusCopy}
-              </p>
-            )}
-            <div className="space-y-2.5">
-              {keyboardRows.map((row) => (
-                <div
-                  key={row}
-                  className="mx-auto flex w-full max-w-[280px] items-center justify-center gap-1 sm:max-w-[360px] sm:gap-1.5 lg:max-w-[420px]"
-                >
-                  {row.split('').map((letter) => {
-                    const hint = keyboardHints[letter];
-                    const isAbsentKey = hint === 'absent';
-                    const pulseActive = Boolean(keyPulse && keyPulse.letter === letter);
-                    const feedbackEntry = keyboardFeedback?.entries.find((entry) => entry.letter === letter);
-                    const keyStyle: CSSProperties | undefined = feedbackEntry
-                      ? { ['--key-feedback-delay' as string]: `${feedbackEntry.delay}ms` }
-                      : undefined;
-                    return (
-                      <button
-                        key={letter}
-                        type="button"
-                        style={keyStyle}
-                        className={cn(
-                          'group relative isolate flex h-9 w-7 flex-none items-center justify-center rounded-[18px] border text-xs font-semibold uppercase tracking-wide text-[#2b140c] shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] transition-all duration-200 ease-out hover:-translate-y-1 hover:shadow-[0_14px_32px_rgba(0,0,0,0.25)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsla(var(--primary)/0.5)] focus-visible:ring-offset-2 focus-visible:ring-offset-transparent sm:h-11 sm:w-9 sm:text-sm lg:h-12 lg:w-10',
-                          hint
-                            ? 'border-transparent text-white dark:text-white'
-                            : 'border-white/50 bg-white/35 text-[#2b140c] backdrop-blur dark:border-white/10 dark:bg-white/10 dark:text-white/80',
-                          hint && keyboardTone[hint],
-                          isAbsentKey && !isLightMode && 'dark:bg-white/[0.04] dark:text-white/30 dark:border-white/10 dark:opacity-45 dark:hover:opacity-60 dark:hover:-translate-y-0 dark:hover:shadow-none',
-                          pulseActive && 'animate-key-pop',
-                          feedbackEntry && 'keyboard-feedback',
-                          feedbackEntry && `keyboard-feedback-${feedbackEntry.evaluation}`,
-                          (!canInteract) && 'opacity-60'
-                        )}
-                        onClick={() => addLetter(letter)}
-                        disabled={!canInteract}
-                        aria-label={`Use letter ${letter}`}
+              {isPlayer && game.status === 'in_progress' && canInteract && (
+                <div>
+                  <div className="flex flex-wrap justify-center gap-2">
+                    {currentGuessPreview.split('').map((letter: string, index: number) => (
+                      <div
+                        key={`preview-${index}`}
+                        className="h-11 w-11 rounded-2xl border border-white/50 bg-white/40 text-center text-lg font-semibold uppercase leading-[2.75rem] text-[#2a1409] shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] backdrop-blur dark:border-white/15 dark:bg-white/10 dark:text-white"
                       >
-                        <span className="relative z-[1]">{letter}</span>
-                        <span className="pointer-events-none absolute inset-0 -z-[1] rounded-[18px] opacity-0 transition-opacity duration-200 group-hover:opacity-100" style={{ background: 'radial-gradient(circle at 50% 0%, rgba(255,255,255,0.8), transparent 58%)' }} />
-                      </button>
-                    );
-                  })}
+                        {letter.trim()}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-4 h-px w-full bg-white/50 dark:bg-white/10" />
                 </div>
-              ))}
-              <div className="flex flex-wrap items-center justify-center gap-2 sm:flex-nowrap">
-                <Button
-                  variant="ghost"
-                  className="shrink-0 gap-2 rounded-2xl border border-[hsla(var(--accent)/0.5)] bg-[hsla(var(--accent)/0.15)] px-5 py-2 text-[hsl(var(--accent))] shadow-[0_12px_28px_rgba(0,128,96,0.2)] dark:border-[hsla(var(--accent)/0.4)] dark:bg-white/5 dark:text-[hsl(var(--accent-foreground))] sm:px-6"
-                  onClick={() => setCurrentGuess('')}
-                  disabled={!canInteract}
-                >
-                  <RotateCcw className="h-4 w-4" /> Reset row
-                </Button>
-                <button
-                  type="button"
-                  className="flex h-10 w-20 items-center justify-center rounded-2xl border border-transparent bg-[hsl(var(--primary))] text-sm font-semibold uppercase text-[hsl(var(--primary-foreground))] shadow-[0_15px_35px_rgba(255,140,0,0.35)] transition-all hover:-translate-y-0.5 sm:h-12 sm:w-24 dark:bg-[hsl(var(--primary))] dark:text-[hsl(var(--primary-foreground))]"
-                  onClick={() => void handleSubmit()}
-                  disabled={!canInteract || isSubmitting}
-                  aria-label="Submit guess"
-                >
-                  <CornerDownLeft className="h-5 w-5" aria-hidden="true" />
-                </button>
-                <button
-                  type="button"
-                  className="flex h-10 w-16 items-center justify-center rounded-2xl border border-transparent bg-[hsl(var(--destructive))] text-sm font-semibold uppercase text-[hsl(var(--destructive-foreground))] shadow-[0_12px_30px_rgba(255,0,72,0.3)] transition-all hover:-translate-y-0.5 sm:h-12 sm:w-18 sm:text-sm dark:bg-[hsl(var(--destructive))] dark:text-[hsl(var(--destructive-foreground))]"
-                  onClick={removeLetter}
-                  disabled={!canInteract || isSubmitting}
-                  aria-label="Delete letter"
-                >
-                  <Delete className="h-5 w-5" aria-hidden="true" />
-                </button>
+              )}
+              {turnStatusCopy && (
+                <p className="text-center text-xs font-semibold uppercase tracking-[0.35em] text-white/80 dark:text-white/60">
+                  {turnStatusCopy}
+                </p>
+              )}
+              {missingPlayerNames.length > 0 && (
+                <div className="rounded-[26px] border border-amber-400/40 bg-amber-500/10 p-4 text-center text-amber-50 shadow-[0_20px_50px_rgba(0,0,0,0.35)] dark:border-amber-300/20 dark:bg-amber-500/5">
+                  <p className="text-sm font-semibold text-amber-100">
+                    Waiting for {missingPlayerNames.join(', ')} to reconnect
+                  </p>
+                  <p className="text-xs text-amber-100/80">
+                    {disconnectCountdown && disconnectCountdown > 0
+                      ? `Match ends in ${disconnectCountdown}s if they stay offline.`
+                      : 'Match will end shortly if they do not return.'}
+                  </p>
+                </div>
+              )}
+              <div className="space-y-2.5">
+                {keyboardRows.map((row) => (
+                  <div
+                    key={row}
+                    className="mx-auto flex w-full max-w-[280px] items-center justify-center gap-1 sm:max-w-[360px] sm:gap-1.5 lg:max-w-[420px]"
+                  >
+                    {row.split('').map((letter) => {
+                      const hint = keyboardHints[letter];
+                      const isAbsentKey = hint === 'absent';
+                      const pulseActive = Boolean(keyPulse && keyPulse.letter === letter);
+                      const feedbackEntry = keyboardFeedback?.entries.find((entry) => entry.letter === letter);
+                      const keyStyle: CSSProperties | undefined = feedbackEntry
+                        ? { ['--key-feedback-delay' as string]: `${feedbackEntry.delay}ms` }
+                        : undefined;
+                      return (
+                        <button
+                          key={letter}
+                          type="button"
+                          style={keyStyle}
+                          className={cn(
+                            'group relative isolate flex h-9 w-7 flex-none items-center justify-center rounded-[18px] border text-xs font-semibold uppercase tracking-wide text-[#2b140c] shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] transition-all duration-200 ease-out hover:-translate-y-1 hover:shadow-[0_14px_32px_rgba(0,0,0,0.25)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsla(var(--primary)/0.5)] focus-visible:ring-offset-2 focus-visible:ring-offset-transparent sm:h-11 sm:w-9 sm:text-sm lg:h-12 lg:w-10',
+                            hint
+                              ? 'border-transparent text-white dark:text-white'
+                              : 'border-white/50 bg-white/35 text-[#2b140c] backdrop-blur dark:border-white/10 dark:bg-white/10 dark:text-white/80',
+                            hint && keyboardTone[hint],
+                            isAbsentKey && !isLightMode && 'dark:bg-white/[0.04] dark:text-white/30 dark:border-white/10 dark:opacity-45 dark:hover:opacity-60 dark:hover:-translate-y-0 dark:hover:shadow-none',
+                            pulseActive && 'animate-key-pop',
+                            feedbackEntry && 'keyboard-feedback',
+                            feedbackEntry && `keyboard-feedback-${feedbackEntry.evaluation}`,
+                            (!canInteract) && 'opacity-60'
+                          )}
+                          onClick={() => addLetter(letter)}
+                          disabled={!canInteract}
+                          aria-label={`Use letter ${letter}`}
+                        >
+                          <span className="relative z-[1]">{letter}</span>
+                          <span className="pointer-events-none absolute inset-0 -z-[1] rounded-[18px] opacity-0 transition-opacity duration-200 group-hover:opacity-100" style={{ background: 'radial-gradient(circle at 50% 0%, rgba(255,255,255,0.8), transparent 58%)' }} />
+                        </button>
+                      );
+                    })}
+                  </div>
+                ))}
+                <div className="flex flex-wrap items-center justify-center gap-2 sm:flex-nowrap">
+                  <Button
+                    variant="ghost"
+                    className="shrink-0 gap-2 rounded-2xl border border-[hsla(var(--accent)/0.5)] bg-[hsla(var(--accent)/0.15)] px-5 py-2 text-[hsl(var(--accent))] shadow-[0_12px_28px_rgba(0,128,96,0.2)] dark:border-[hsla(var(--accent)/0.4)] dark:bg-white/5 dark:text-[hsl(var(--accent-foreground))] sm:px-6"
+                    onClick={() => setCurrentGuess('')}
+                    disabled={!canInteract}
+                  >
+                    <RotateCcw className="h-4 w-4" /> Reset row
+                  </Button>
+                  <button
+                    type="button"
+                    className="flex h-10 w-20 items-center justify-center rounded-2xl border border-transparent bg-[hsl(var(--primary))] text-sm font-semibold uppercase text-[hsl(var(--primary-foreground))] shadow-[0_15px_35px_rgba(255,140,0,0.35)] transition-all hover:-translate-y-0.5 sm:h-12 sm:w-24 dark:bg-[hsl(var(--primary))] dark:text-[hsl(var(--primary-foreground))]"
+                    onClick={() => void handleSubmit()}
+                    disabled={!canInteract || isSubmitting}
+                    aria-label="Submit guess"
+                  >
+                    <CornerDownLeft className="h-5 w-5" aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    className="flex h-10 w-16 items-center justify-center rounded-2xl border border-transparent bg-[hsl(var(--destructive))] text-sm font-semibold uppercase text-[hsl(var(--destructive-foreground))] shadow-[0_12px_30px_rgba(255,0,72,0.3)] transition-all hover:-translate-y-0.5 sm:h-12 sm:w-18 sm:text-sm dark:bg-[hsl(var(--destructive))] dark:text-[hsl(var(--destructive-foreground))]"
+                    onClick={removeLetter}
+                    disabled={!canInteract || isSubmitting}
+                    aria-label="Delete letter"
+                  >
+                    <Delete className="h-5 w-5" aria-hidden="true" />
+                  </button>
+                </div>
               </div>
-            </div>
             </div>
           </div>
-          
+
           <div className="mx-auto max-w-md rounded-[26px] border border-[hsl(var(--panel-border))] bg-[hsl(var(--panel-neutral))] p-6 shadow-xl dark:border-border dark:bg-[hsl(var(--card))]">
             <div className="flex items-center justify-between">
               <p className="text-xs uppercase tracking-[0.35em] text-muted-foreground">Players</p>
@@ -1529,24 +1780,24 @@ export default function GamePage() {
                 <div className="mt-4 flex flex-wrap justify-center gap-1.5 sm:gap-2">
                   {solutionWord
                     ? solutionWord.split('').map((letter, index) => (
-                        <span
-                          key={`${letter}-${index}`}
-                          className={cn(
-                            'flex h-10 w-10 items-center justify-center rounded-2xl font-black text-lg uppercase tracking-[0.15em] transition-transform duration-300 sm:h-12 sm:w-12 sm:text-xl',
-                            didWin
-                              ? 'bg-[hsl(var(--accent))] text-[hsl(var(--accent-foreground))] shadow-[0_18px_40px_rgba(0,0,0,0.25)] dark:bg-white/15 dark:text-white'
-                              : 'bg-[hsla(var(--destructive)/0.35)] text-white shadow-[0_18px_45px_rgba(0,0,0,0.5)] dark:bg-white/15 dark:text-white'
-                          )}
-                          style={{ animation: `word-glow 3s ease-in-out ${index * 0.12}s infinite` }}
-                        >
-                          {letter}
-                        </span>
-                      ))
+                      <span
+                        key={`${letter}-${index}`}
+                        className={cn(
+                          'flex h-10 w-10 items-center justify-center rounded-2xl font-black text-lg uppercase tracking-[0.15em] transition-transform duration-300 sm:h-12 sm:w-12 sm:text-xl',
+                          didWin
+                            ? 'bg-[hsl(var(--accent))] text-[hsl(var(--accent-foreground))] shadow-[0_18px_40px_rgba(0,0,0,0.25)] dark:bg-white/15 dark:text-white'
+                            : 'bg-[hsla(var(--destructive)/0.35)] text-white shadow-[0_18px_45px_rgba(0,0,0,0.5)] dark:bg-white/15 dark:text-white'
+                        )}
+                        style={{ animation: `word-glow 3s ease-in-out ${index * 0.12}s infinite` }}
+                      >
+                        {letter}
+                      </span>
+                    ))
                     : (
-                        <span className="rounded-full bg-muted px-4 py-2 text-xs uppercase tracking-[0.35em] text-muted-foreground">
-                          Hidden for now
-                        </span>
-                      )}
+                      <span className="rounded-full bg-muted px-4 py-2 text-xs uppercase tracking-[0.35em] text-muted-foreground">
+                        Hidden for now
+                      </span>
+                    )}
                 </div>
               </div>
 
@@ -1561,6 +1812,17 @@ export default function GamePage() {
             </div>
           </div>
         </div>
+      )}
+
+      {shouldShowChatDock && (
+        <ChatDock
+          context={chatDockContext}
+          availability={chatAvailability}
+          participantCount={chatParticipantCount}
+          participants={chatParticipants}
+          unreadCount={0}
+          onComposerFocusChange={(focused) => setChatComposerFocused(focused)}
+        />
       )}
 
       {isLocalhost && process.env.NODE_ENV !== 'production' && (

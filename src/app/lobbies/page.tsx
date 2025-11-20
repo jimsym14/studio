@@ -26,6 +26,7 @@ interface LobbyWithId extends GameDocument {
 }
 
 const STALE_THRESHOLD_MS = 10 * 60 * 1000;
+const ACTIVE_QUERY_WINDOW_MS = STALE_THRESHOLD_MS * 6; // ~1 hour of history
 
 const parseIsoToMs = (value?: string | null) => {
   if (!value) return null;
@@ -89,15 +90,17 @@ export default function LobbyBrowserPage() {
 
   useEffect(() => {
     if (!db) return;
+    const recentCutoffIso = new Date(Date.now() - ACTIVE_QUERY_WINDOW_MS).toISOString();
     const lobbyQuery = query(
       collection(db, 'games'),
-      where('gameType', '==', 'multiplayer'),
-      where('status', 'in', ['waiting', 'in_progress']),
+      where('lastActivityAt', '>=', recentCutoffIso),
       orderBy('lastActivityAt', 'desc'),
       limit(200)
     );
     const unsubscribe = onSnapshot(lobbyQuery, (snapshot) => {
-      const nextLobbies = snapshot.docs.map((doc) => ({ id: doc.id, ...(doc.data() as GameDocument) }));
+      const nextLobbies = snapshot.docs
+        .map((doc) => ({ id: doc.id, ...(doc.data() as GameDocument) }))
+        .filter((game) => typeof game.lastActivityAt === 'string' && game.lastActivityAt.length > 0);
       setLobbies(nextLobbies);
       setLoading(false);
     });
@@ -204,11 +207,11 @@ export default function LobbyBrowserPage() {
   const submitPrivatePasscode = async (lobby: LobbyWithId) => {
     const rawPasscode = passcodeDrafts[lobby.id]?.trim() ?? '';
     if (!rawPasscode) {
-      setPasscodeErrors((prev) => ({ ...prev, [lobby.id]: 'Δώσε το συνθηματικό.' }));
+      setPasscodeErrors((prev) => ({ ...prev, [lobby.id]: 'Enter the passcode.' }));
       return;
     }
     if (!lobby.passcodeHash) {
-      setPasscodeErrors((prev) => ({ ...prev, [lobby.id]: 'Το lobby δεν δέχεται πλέον κωδικό.' }));
+      setPasscodeErrors((prev) => ({ ...prev, [lobby.id]: 'This lobby no longer accepts a passcode.' }));
       return;
     }
 
@@ -216,7 +219,7 @@ export default function LobbyBrowserPage() {
     try {
       const hashed = await hashToHex(rawPasscode);
       if (hashed !== lobby.passcodeHash) {
-        setPasscodeErrors((prev) => ({ ...prev, [lobby.id]: 'Λάθος συνθηματικό.' }));
+        setPasscodeErrors((prev) => ({ ...prev, [lobby.id]: 'Incorrect passcode.' }));
         return;
       }
       rememberLobbyAccess(lobby.id, hashed);
@@ -226,7 +229,7 @@ export default function LobbyBrowserPage() {
       router.push(`/lobby/${lobby.id}`);
     } catch (error) {
       console.error('Failed to unlock lobby', error);
-      setPasscodeErrors((prev) => ({ ...prev, [lobby.id]: 'Κάτι πήγε στραβά, δοκίμασε ξανά.' }));
+      setPasscodeErrors((prev) => ({ ...prev, [lobby.id]: 'Something went wrong. Please try again.' }));
     } finally {
       setUnlockingLobbyId(null);
     }

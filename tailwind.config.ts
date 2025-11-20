@@ -15,6 +15,7 @@ export default {
         code: ['monospace'],
         comic: ['Soopafresh', 'cursive'],
         moms: ['Moms', 'cursive'],
+        digital: ['"Share Tech Mono"', 'ui-monospace', 'monospace'],
       },
       colors: {
         background: 'hsl(var(--background))',

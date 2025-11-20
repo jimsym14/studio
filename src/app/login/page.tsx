@@ -172,7 +172,7 @@ type SignUpValues = z.infer<typeof signUpSchema>;
 
 export default function LoginPage() {
   const router = useRouter();
-  const { auth, db, user, profile, signOut } = useFirebase();
+  const { auth, db, user, profile, signOut, sessionConflict } = useFirebase();
   const { toast } = useToast();
   const [guestName, setGuestName] = useState(generateGuestHandle);
   const [guestLoading, setGuestLoading] = useState(false);
@@ -432,6 +432,13 @@ export default function LoginPage() {
           </div>
         </motion.div>
 
+        {sessionConflict && (
+          <div className="mb-6 w-full max-w-3xl rounded-2xl border border-amber-400/30 bg-amber-50/10 px-6 py-4 text-amber-100">
+            Your account is open in another tab or device. Close that session or wait for it to sign out, then try
+            again.
+          </div>
+        )}
+
         <div className="w-full max-w-3xl rounded-[36px] border border-white/20 bg-white/10 p-1 shadow-[0_35px_120px_rgba(0,0,0,0.45)] backdrop-blur-3xl">
           <div className="rounded-[32px] border border-white/25 bg-white/5 p-6 text-white shadow-inner shadow-black/30 sm:p-10">
             <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as TabKey)}>
@@ -481,7 +488,7 @@ export default function LoginPage() {
                                 <Input
                                   {...field}
                                   autoComplete="username"
-                                  className="rounded-2xl border border-white/20 bg-white/10 px-4 py-5 text-base text-white placeholder:text-white/40"
+                                  className="rounded-2xl border border-white/20 bg-white/10 px-4 py-5 text-base text-white placeholder:text-white/40 font-comic"
                                 />
                               </FormControl>
                               <FormMessage />
@@ -499,7 +506,7 @@ export default function LoginPage() {
                                   type="password"
                                   autoComplete="current-password"
                                   {...field}
-                                  className="rounded-2xl border border-white/20 bg-white/10 px-4 py-5 text-base text-white placeholder:text-white/40"
+                                  className="rounded-2xl border border-white/20 bg-white/10 px-4 py-5 text-base text-white placeholder:text-white/40 font-comic"
                                 />
                               </FormControl>
                               <FormMessage />
@@ -547,7 +554,7 @@ export default function LoginPage() {
                                 <Input
                                   {...field}
                                   autoComplete="username"
-                                  className="rounded-2xl border border-white/20 bg-white/10 px-4 py-5 text-base text-white placeholder:text-white/40"
+                                  className="rounded-2xl border border-white/20 bg-white/10 px-4 py-5 text-base text-white placeholder:text-white/40 font-comic"
                                 />
                               </FormControl>
                               {copy.helper.username && <p className="text-xs text-white/60">{copy.helper.username}</p>}
@@ -566,7 +573,7 @@ export default function LoginPage() {
                                   type="email"
                                   autoComplete="email"
                                   {...field}
-                                  className="rounded-2xl border border-white/20 bg-white/10 px-4 py-5 text-base text-white placeholder:text-white/40"
+                                  className="rounded-2xl border border-white/20 bg-white/10 px-4 py-5 text-base text-white placeholder:text-white/40 font-comic"
                                 />
                               </FormControl>
                               <FormMessage />
@@ -584,7 +591,7 @@ export default function LoginPage() {
                                   type="password"
                                   autoComplete="new-password"
                                   {...field}
-                                  className="rounded-2xl border border-white/20 bg-white/10 px-4 py-5 text-base text-white placeholder:text-white/40"
+                                  className="rounded-2xl border border-white/20 bg-white/10 px-4 py-5 text-base text-white placeholder:text-white/40 font-comic"
                                 />
                               </FormControl>
                               <FormMessage />
@@ -602,7 +609,7 @@ export default function LoginPage() {
                                   type="password"
                                   autoComplete="new-password"
                                   {...field}
-                                  className="rounded-2xl border border-white/20 bg-white/10 px-4 py-5 text-base text-white placeholder:text-white/40"
+                                  className="rounded-2xl border border-white/20 bg-white/10 px-4 py-5 text-base text-white placeholder:text-white/40 font-comic"
                                 />
                               </FormControl>
                               <FormMessage />
@@ -709,7 +716,8 @@ export default function LoginPage() {
                     <FormLabel>Username</FormLabel>
                     <FormControl>
                       <div className="flex gap-3">
-                        <Input {...field} className="flex-1 rounded-2xl border border-white/20 px-4 py-5" />
+                        <Input {...field} className="flex-1 rounded-2xl border border-white/20 px-4 py-5 font-comic" />
+
                         <Button
                           type="button"
                           variant="secondary"

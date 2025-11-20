@@ -36,6 +36,8 @@ import type { GameDocument } from '@/types/game';
 import { hashToHex } from '@/lib/hash-client';
 import { readLobbyAccess, rememberLobbyAccess } from '@/lib/lobby-access';
 import { readLobbyPasscode, rememberLobbyPasscode } from '@/lib/lobby-passcode';
+import { isGuestProfile } from '@/types/user';
+import { runWithFirestoreRetry } from '@/lib/firestore-retry';
 
 const LOBBY_GRACE_MINUTES = 2;
 const WAITING_FOR_PLAYER_MINUTES = 10;
@@ -208,7 +210,7 @@ const LoadingState = () => (
 export default function LobbyPage() {
   const params = useParams();
   const router = useRouter();
-  const { db, userId, profile } = useFirebase();
+  const { db, userId, user, profile } = useFirebase();
   const { resolvedTheme } = useTheme();
   const { toast } = useToast();
 
@@ -227,11 +229,14 @@ export default function LobbyPage() {
 
   const gameId = params.gameId as string;
   const isDarkTheme = resolvedTheme === 'dark';
+  const guest = profile ? isGuestProfile(profile) : false;
+  const signedIn = Boolean(user);
 
   const inviteLink = useMemo(() => {
     if (typeof window === 'undefined') return '';
     return `${window.location.origin}/lobby/${gameId}`;
   }, [gameId]);
+
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
@@ -365,8 +370,8 @@ export default function LobbyPage() {
 
         setGame(nextGameData);
 
-        const players = nextGameData.players ?? [];
-        const isPlayer = Boolean(userId && players.includes(userId));
+  const players = nextGameData.players ?? [];
+  const isPlayer = Boolean(userId && players.includes(userId));
 
         if (passProtected && !isPlayer && !cachedMatch) {
           setLoading(false);
@@ -395,12 +400,19 @@ export default function LobbyPage() {
           }
         }
 
-  const activePlayersCount = (nextGameData.activePlayers ?? []).filter((id) => Boolean(id)).length;
-  const readyPlayers = players.filter((id): id is string => Boolean(id));
+        const activePlayersCount = (nextGameData.activePlayers ?? []).filter((id) => Boolean(id)).length;
+        const readyPlayers = players.filter((id): id is string => Boolean(id));
+        const sortedReadyPlayers = [...readyPlayers].sort();
+        const startCoordinatorId =
+          (nextGameData.creatorId && readyPlayers.includes(nextGameData.creatorId)
+            ? nextGameData.creatorId
+            : sortedReadyPlayers[0]) ?? null;
+        const canStartMatch = Boolean(userId && startCoordinatorId && userId === startCoordinatorId);
 
-  if (nextGameData.status === 'waiting' && readyPlayers.length >= 2 && activePlayersCount >= 2) {
+        if (canStartMatch && nextGameData.status === 'waiting' && readyPlayers.length >= 2 && activePlayersCount >= 2) {
           try {
-            await runTransaction(db, async (transaction) => {
+            await runWithFirestoreRetry(() =>
+              runTransaction(db, async (transaction) => {
               const freshSnapshot = await transaction.get(gameRef);
               if (!freshSnapshot.exists()) return;
               const freshData = freshSnapshot.data() as GameDocument;
@@ -437,7 +449,8 @@ export default function LobbyPage() {
               }
 
               transaction.update(gameRef, updatePayload);
-            });
+            })
+            );
             toast({ title: 'Players ready', description: 'Launching the board…' });
           } catch (error) {
             console.error('Failed to start match from lobby', error);
@@ -452,7 +465,7 @@ export default function LobbyPage() {
       },
       (error) => {
         console.error('Failed to load lobby', error);
-        toast({ variant: 'destructive', title: 'Lobby unavailable', description: 'Η σελίδα λόμπι δεν φορτώθηκε.' });
+        toast({ variant: 'destructive', title: 'Lobby unavailable', description: 'The lobby page failed to load.' });
         router.push('/');
       }
     );
@@ -646,6 +659,15 @@ export default function LobbyPage() {
   };
 
   const currentUserDisplayName = resolvePlayerName(userId) ?? profile?.username ?? 'You';
+  const chatParticipants = (game?.players ?? [])
+    .filter((playerId): playerId is string => Boolean(playerId))
+    .slice(0, 2)
+    .map((playerId) => ({
+      id: playerId,
+      displayName: resolvePlayerName(playerId),
+      photoURL: playerId === userId ? profile?.photoURL ?? null : null,
+      isSelf: playerId === userId,
+    }));
   const matchDisplayValue = matchCountdown ?? formatMatchSettingLabel(game.matchTime);
   const turnDisplayValue = turnCountdown ?? formatTurnSettingLabel(game.turnTime);
 

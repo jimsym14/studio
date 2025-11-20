@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { doc, getDoc, type Firestore } from 'firebase/firestore';
 
 import type { UserProfile } from '@/types/user';
@@ -55,10 +55,10 @@ export function usePlayerNames({ db, playerIds }: UsePlayerNamesOptions) {
     };
   }, [db, normalizedIds, names]);
 
-  const getPlayerName = (uid?: string | null) => {
+  const getPlayerName = useCallback((uid?: string | null) => {
     if (!uid) return undefined;
     return names[uid] || undefined;
-  };
+  }, [names]);
 
   return { playerNames: names, getPlayerName };
 }

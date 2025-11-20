@@ -229,7 +229,7 @@ export function SettingsModal({ isOpen, gameType, onClose }: SettingsModalProps)
     <Dialog open={isOpen} onOpenChange={onClose}>
       <AnimatePresence>
         {isOpen && (
-          <DialogContent className="max-w-md p-0 overflow-hidden" onOpenAutoFocus={(e) => e.preventDefault()}>
+          <DialogContent className="max-w-md p-0 overflow-hidden">
             <motion.div
               initial={{ opacity: 0, scale: 0.95, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}

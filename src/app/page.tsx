@@ -1,14 +1,13 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+ import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useTheme } from 'next-themes';
-import { Compass, Crown, User, Users } from 'lucide-react';
+import { Compass, Crown, User, UserPlus, Users } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 import { Logo } from '@/components/logo';
 import { ThemeToggle } from '@/components/theme-toggle';
-import { LanguageToggle } from '@/components/language-toggle';
 import { SettingsModal } from '@/components/settings-modal';
 import GreetingChanger from '@/components/greeting-changer';
 import { Separator } from '@/components/ui/separator';
@@ -18,24 +17,11 @@ import { UserMenu } from '@/components/user-menu';
 import { useFirebase } from '@/components/firebase-provider';
 import { isGuestProfile } from '@/types/user';
 import { cn } from '@/lib/utils';
+import { useOnlinePlayers } from '@/hooks/use-online-players';
+import { useFriendsModal } from '@/components/friends-modal-provider';
+import { useOverviewStats, type LeaderboardStat } from '@/hooks/use-overview-stats';
 
 type GameType = 'solo' | 'multiplayer';
-
-type LeaderboardStat = {
-  playerId: string | null;
-  displayName: string;
-  count: number;
-};
-
-type OverviewStatsPayload = {
-  activeLobbies: number;
-  waitingRooms: number;
-  privateRooms: number;
-  playersOnline: number;
-  wordsSolvedToday: number;
-  mostWordsToday: LeaderboardStat;
-  monthlyLegend: LeaderboardStat;
-};
 
 export default function Home() {
   const router = useRouter();
@@ -46,15 +32,16 @@ export default function Home() {
   }>({ isOpen: false, gameType: null });
 
   const [activeMode, setActiveMode] = useState<GameType>('solo');
-  const [overviewStats, setOverviewStats] = useState<OverviewStatsPayload | null>(null);
-  const [statsError, setStatsError] = useState<string | null>(null);
   const isMobile = useIsMobile();
   const guest = profile ? isGuestProfile(profile) : false;
   const signedIn = Boolean(user);
+  const playerId = user?.uid ?? null;
   const statusLabel = signedIn ? (guest ? 'Guest mode' : 'Signed in') : 'Not signed in';
   const displayName = profile?.username ?? user?.displayName ?? (signedIn ? 'Player' : 'WordMates');
+  const { count: livePlayersOnline, live: livePlayersEnabled } = useOnlinePlayers();
   const { resolvedTheme } = useTheme();
   const isLightMode = resolvedTheme === 'light';
+  const { openFriendsModal, pendingRequestCount } = useFriendsModal();
   const heroGlowDark = 'radial-gradient(circle, hsl(var(--primary) / 0.55) 0%, hsl(var(--hero-glow-soft) / 0.9) 45%, hsl(var(--hero-glow-strong) / 0.08) 75%)';
   const heroGlowLight = 'radial-gradient(circle, rgba(255, 143, 53, 0.8) 0%, rgba(255, 193, 134, 0.78) 40%, rgba(255, 175, 110, 0.35) 65%, rgba(255, 160, 96, 0.12) 80%)';
   const heroGlowBackground = isLightMode ? heroGlowLight : heroGlowDark;
@@ -93,55 +80,47 @@ export default function Home() {
     },
   };
 
-  useEffect(() => {
-    let cancelled = false;
+  const { stats: overviewStats, error: statsError } = useOverviewStats(playerId);
 
-    const fetchStats = async () => {
-      try {
-        const response = await fetch('/api/stats/overview', { cache: 'no-store' });
-        if (!response.ok) {
-          throw new Error(`Stats request failed with ${response.status}`);
-        }
-        const payload = (await response.json()) as OverviewStatsPayload;
-        if (!cancelled) {
-          setOverviewStats(payload);
-          setStatsError(null);
-        }
-      } catch (error) {
-        console.error('Failed to fetch overview stats', error);
-        if (!cancelled) {
-          setStatsError('Δεν μπορέσαμε να συγχρονίσουμε τα live stats.');
-        }
-      }
-    };
+  const heroStats = useMemo(() => {
+    const baselinePlayers = livePlayersEnabled && livePlayersOnline != null
+      ? livePlayersOnline
+      : overviewStats?.playersOnline ?? null;
+    const minimumSelfPresence = signedIn || guest ? 1 : 0;
+    const playersOnlineCount = baselinePlayers != null
+      ? Math.max(baselinePlayers, minimumSelfPresence)
+      : minimumSelfPresence > 0
+        ? minimumSelfPresence
+        : null;
+    const playersOnlineValue = playersOnlineCount != null
+      ? playersOnlineCount.toLocaleString('en-US')
+      : '—';
+    const selfOnlyHelper = minimumSelfPresence > 0 && (baselinePlayers == null || baselinePlayers < minimumSelfPresence);
+    const playersOnlineHelper = !livePlayersEnabled
+      ? 'Live view paused'
+      : selfOnlyHelper
+        ? 'Counting your active session'
+        : undefined;
 
-    fetchStats();
-    const interval = window.setInterval(fetchStats, 60_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, []);
+    const personalSolved = overviewStats?.userWordsSolvedToday;
+    const solvedCount = personalSolved != null
+      ? personalSolved
+      : overviewStats?.wordsSolvedToday ?? null;
+    const solvedValue = solvedCount != null ? solvedCount.toLocaleString('en-US') : '—';
+    const solvedLabel = personalSolved != null ? 'Your words solved today' : 'Words solved today';
 
-  const heroStats = useMemo(
-    () => ([
+    return [
       {
         label: 'Players online',
-        value:
-          overviewStats?.playersOnline != null
-            ? overviewStats.playersOnline.toLocaleString('en-US')
-            : '—',
+        value: playersOnlineValue,
+        helper: playersOnlineHelper,
       },
       {
-        label: 'Words solved today',
-        value:
-          overviewStats?.wordsSolvedToday != null
-            ? overviewStats.wordsSolvedToday.toLocaleString('en-US')
-            : '—',
+        label: solvedLabel,
+        value: solvedValue,
       },
-    ]),
-    [overviewStats]
-  );
+    ];
+  }, [guest, livePlayersEnabled, livePlayersOnline, overviewStats, signedIn]);
 
   const topFinders = useMemo(
     () => ([
@@ -166,6 +145,10 @@ export default function Home() {
 
   const handleBrowseLobbies = () => {
     router.push('/lobbies');
+  };
+
+  const handleFriendsClick = () => {
+    openFriendsModal();
   };
 
   const activeDetails = modeConfig[activeMode];
@@ -309,13 +292,27 @@ export default function Home() {
               </div>
             </div>
             <div className="flex items-center gap-2 sm:gap-3">
-              <LanguageToggle
-                variant="icon"
+              <Button
+                type="button"
+                size="icon"
+                variant="ghost"
+                onClick={handleFriendsClick}
                 className={cn(
-                  'h-10 w-10 border bg-transparent',
+                  'relative h-10 w-10 border bg-transparent',
                   isLightMode ? 'border-slate/60 bg-white/60 text-slate-900' : 'border-white/25 text-white'
                 )}
-              />
+                aria-label="Open friends and chats"
+              >
+                <UserPlus className="h-5 w-5" />
+                <span className="sr-only">Open friends</span>
+                {pendingRequestCount > 0 && (
+                  <span
+                    className="absolute -right-1 -top-1 flex h-5 min-w-[1.3rem] items-center justify-center rounded-full bg-destructive px-1 text-[0.65rem] font-semibold text-destructive-foreground"
+                  >
+                    {pendingRequestCount > 99 ? '99+' : pendingRequestCount}
+                  </span>
+                )}
+              </Button>
               <ThemeToggle
                 className={cn(
                   'h-10 w-10 rounded-full border',
@@ -360,6 +357,9 @@ export default function Home() {
                 >
                   <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">{stat.label}</p>
                   <p className="mt-2 text-2xl font-black tracking-tight">{stat.value}</p>
+                  {stat.helper && (
+                    <p className="mt-1 text-xs text-muted-foreground">{stat.helper}</p>
+                  )}
                 </div>
               ))}
             </div>
