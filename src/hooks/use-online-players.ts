@@ -13,11 +13,11 @@ type OnlinePlayersState = {
 const initialState: OnlinePlayersState = { count: null, live: false };
 
 export function useOnlinePlayers() {
-  const { db, sessionLocksEnabled } = useFirebase();
+  const { db, sessionLocksEnabled, sessionStatus } = useFirebase();
   const [state, setState] = useState<OnlinePlayersState>(initialState);
 
   useEffect(() => {
-    if (!db || !sessionLocksEnabled) {
+    if (!db || !sessionLocksEnabled || sessionStatus !== 'active') {
       Promise.resolve().then(() => setState({ count: null, live: false }));
       return undefined;
     }
@@ -50,7 +50,7 @@ export function useOnlinePlayers() {
     );
 
     return unsubscribe;
-  }, [db, sessionLocksEnabled]);
+  }, [db, sessionLocksEnabled, sessionStatus]);
 
   return state;
 }

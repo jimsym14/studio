@@ -106,6 +106,6 @@ const ensureRealtimeServer = (res: NextApiResponseWithSocket) => {
 };
 
 export default function handler(_req: NextApiRequest, res: NextApiResponseWithSocket) {
-  ensureRealtimeServer(res);
+  // ensureRealtimeServer(res);
   res.end();
 }

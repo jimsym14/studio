@@ -1,5 +1,6 @@
+
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { collection, doc, onSnapshot, query, orderBy, limit, Timestamp } from 'firebase/firestore';
+import { collection, doc, onSnapshot, query, orderBy, limit, Timestamp, setDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import { initializeFirebase } from '@/lib/firebase';
 import { useRealtime } from '@/components/realtime-provider';
 import { useFirebase } from '@/components/firebase-provider';
@@ -12,18 +13,18 @@ const generateClientMessageId = () => {
     if (typeof crypto !== 'undefined' && crypto.randomUUID) {
         return crypto.randomUUID();
     }
-    return `msg_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    return `msg_${Date.now()}_${Math.random().toString(16).slice(2)} `;
 };
 
 const buildContextKey = (context: ChatContextDescriptor) => {
     if (context.scope === 'friend') {
-        return `friend:${context.friendshipId ?? context.friendUserId}`;
+        return `friend:${context.friendshipId ?? context.friendUserId} `;
     }
     if (context.scope === 'lobby') {
-        return `lobby:${context.lobbyId}`;
+        return `lobby:${context.lobbyId} `;
     }
     if (context.scope === 'game') {
-        return `game:${context.gameId}`;
+        return `game:${context.gameId} `;
     }
     return 'unknown';
 };
@@ -85,7 +86,7 @@ export function useChatRoom({ context, enabled = true }: UseChatRoomOptions) {
     const { userId } = useFirebase();
     const { toast } = useToast();
     const contextKey = useMemo(() => buildContextKey(context), [context]);
-    const cacheKey = useMemo(() => (userId && contextKey ? `${userId}:${contextKey}` : null), [contextKey, userId]);
+    const cacheKey = useMemo(() => (userId && contextKey ? `${userId}:${contextKey} ` : null), [contextKey, userId]);
     const openChatPayload = useMemo(() => {
         if (context.scope === 'friend') {
             return {
@@ -114,7 +115,6 @@ export function useChatRoom({ context, enabled = true }: UseChatRoomOptions) {
     const [error, setError] = useState<string | null>(null);
     const [sending, setSending] = useState(false);
     const [typingUsers, setTypingUsers] = useState<string[]>([]);
-    const [readReceipts, setReadReceipts] = useState<Record<string, Date>>({});
     const [membership, setMembership] = useState<{ lastReadAt?: Date } | null>(null);
     const [lastMessageAt, setLastMessageAt] = useState<Date | null>(null);
     const lastMarkedReadAtRef = useRef(0);
@@ -149,7 +149,6 @@ export function useChatRoom({ context, enabled = true }: UseChatRoomOptions) {
         Object.entries(data.readReceipts).forEach(([uid, ts]) => {
             if (ts) parsedReceipts[uid] = new Date(ts);
         });
-        setReadReceipts(parsedReceipts);
 
         if (data.membership?.lastReadAt) {
             const parsed = new Date(data.membership.lastReadAt);
@@ -217,7 +216,7 @@ export function useChatRoom({ context, enabled = true }: UseChatRoomOptions) {
 
                 if (mounted) {
                     setChatId(newChatId);
-                    await fetchMessagesForChatId(newChatId);
+                    // Firestore listeners will load messages automatically
                     if (!mounted) return;
                     setStatus('ready');
                 }
@@ -257,16 +256,6 @@ export function useChatRoom({ context, enabled = true }: UseChatRoomOptions) {
             subscribeToChat();
         };
 
-        const handleTyping = (payload: { chatId: string; userId: string; isTyping: boolean }) => {
-            if (payload.chatId !== chatId) return;
-            setTypingUsers(prev => {
-                if (payload.isTyping) {
-                    return prev.includes(payload.userId) ? prev : [...prev, payload.userId];
-                }
-                return prev.filter(id => id !== payload.userId);
-            });
-        };
-
         const handleError = (payload: { chatId: string; error?: string }) => {
             if (payload.chatId !== chatId) return;
             if (payload.error === 'not_member') {
@@ -275,14 +264,13 @@ export function useChatRoom({ context, enabled = true }: UseChatRoomOptions) {
                 }
                 retryTimer = setTimeout(() => {
                     if (destroyed) return;
-                    void refreshMessages();
+                    // Firestore listeners will auto-sync, no need to refresh
                     subscribeToChat();
                 }, 500);
             }
         };
 
         socket.on('connect', handleConnect);
-        socket.on('chat:typing', handleTyping);
         socket.on('chat:error', handleError);
 
         return () => {
@@ -292,7 +280,6 @@ export function useChatRoom({ context, enabled = true }: UseChatRoomOptions) {
             }
             socket.emit('chat:unsubscribe', { chatId });
             socket.off('connect', handleConnect);
-            socket.off('chat:typing', handleTyping);
             socket.off('chat:error', handleError);
         };
     }, [socket, chatId, userId, refreshMessages]);
@@ -359,7 +346,6 @@ export function useChatRoom({ context, enabled = true }: UseChatRoomOptions) {
                         parsedReceipts[uid] = new Date(ts);
                     }
                 });
-                setReadReceipts(parsedReceipts);
 
                 // Update own membership lastReadAt if available in readReceipts
                 if (userId && parsedReceipts[userId]) {
@@ -440,16 +426,65 @@ export function useChatRoom({ context, enabled = true }: UseChatRoomOptions) {
             prevConnectionRef.current = connected;
             return;
         }
-        if (!prevConnectionRef.current && connected) {
-            void refreshMessages();
-        }
+        // Firestore listeners will auto-sync on reconnect
         prevConnectionRef.current = connected;
     }, [chatId, connected, refreshMessages]);
 
-    const sendTyping = useCallback((isTyping: boolean) => {
-        if (!socket || !chatId) return;
-        socket.emit('chat:typing', { chatId, isTyping });
-    }, [socket, chatId]);
+    // Firestore typing listener
+    useEffect(() => {
+        if (!chatId || !db) return;
+        const typingRef = collection(db, 'chats', chatId, 'typing');
+
+        // Store raw typing data to be filtered periodically
+        let rawTypingData: Record<string, number> = {};
+
+        const updateTypingUsers = () => {
+            const now = Date.now();
+            const active = Object.entries(rawTypingData)
+                .filter(([uid, ts]) => uid !== userId && (now - ts) < 5000) // 5s timeout
+                .map(([uid]) => uid);
+            setTypingUsers(prev => {
+                // Only update if changed to avoid re-renders
+                if (prev.length === active.length && prev.every(id => active.includes(id))) return prev;
+                return active;
+            });
+        };
+
+        const unsubscribe = onSnapshot(typingRef, (snapshot) => {
+            rawTypingData = {};
+            snapshot.docs.forEach(doc => {
+                const data = doc.data();
+                const ts = data.timestamp instanceof Timestamp ? data.timestamp.toMillis() : 0;
+                rawTypingData[doc.id] = ts;
+            });
+            updateTypingUsers();
+        });
+
+        const interval = setInterval(updateTypingUsers, 1000);
+
+        return () => {
+            unsubscribe();
+            clearInterval(interval);
+        };
+    }, [chatId, db, userId]);
+
+    const sendTyping = useCallback(async (isTyping: boolean) => {
+        if (!chatId || !userId || !db) return;
+        const typingRef = doc(db, 'chats', chatId, 'typing', userId);
+
+        try {
+            if (isTyping) {
+                await setDoc(typingRef, {
+                    isTyping: true,
+                    timestamp: serverTimestamp(),
+                });
+            } else {
+                await deleteDoc(typingRef);
+            }
+        } catch (err) {
+            console.warn('Failed to update typing status', err);
+        }
+    }, [chatId, userId, db]);
 
     const sendReaction = useCallback(async (messageId: string, emoji: string) => {
         if (!chatId || !userId) return;
@@ -499,10 +534,8 @@ export function useChatRoom({ context, enabled = true }: UseChatRoomOptions) {
         sending,
         error,
         chatId,
-        readReceipts,
         membership,
         refreshMessages,
-        markMessagesRead,
         typingUsers,
         sendTyping,
         sendReaction

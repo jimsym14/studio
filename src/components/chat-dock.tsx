@@ -73,7 +73,7 @@ const EDGE_PADDING = 24;
 const CHAT_PANEL_WIDTH = 420;
 const CHAT_PANEL_HEIGHT = 580; // Approximate max height
 
-const defaultBubblePosition: BubblePosition = { edge: "right", offsetY: 100 };
+const defaultBubblePosition: BubblePosition = { edge: "right", offsetY: 9000 };
 
 const deriveContextStorageKey = (descriptor: ChatContextDescriptor) => {
   if (descriptor.scope === "game") {
@@ -108,7 +108,7 @@ export function ChatDock({
   onComposerFocusChange,
 }: ChatDockProps) {
   const { toast } = useToast();
-  const { userId } = useFirebase();
+  const { userId, user } = useFirebase();
   const { connected: realtimeConnected } = useRealtime();
   const [open, setOpen] = useState(false);
   const [message, setMessage] = useState("");
@@ -139,6 +139,7 @@ export function ChatDock({
   const { theme } = useTheme();
   const [isMobile, setIsMobile] = useState(false);
   const nativeEmojiInputRef = useRef<HTMLInputElement>(null);
+  const lastTypingSentRef = useRef<number>(0);
 
   useEffect(() => {
     const checkMobile = () => setIsMobile(window.matchMedia("(pointer: coarse)").matches);
@@ -204,10 +205,8 @@ export function ChatDock({
     sending,
     error,
     chatId,
-    readReceipts,
     membership,
     refreshMessages,
-    markMessagesRead,
     typingUsers,
     sendTyping,
     sendReaction,
@@ -270,17 +269,6 @@ export function ChatDock({
     return null;
   }, [messages, userId]);
   const latestMessage = messages.length ? messages[messages.length - 1] : null;
-
-  const selfReadAt = membership?.lastReadAt?.getTime?.() ?? 0;
-  const opponentReadAt = opponent?.id ? readReceipts[opponent.id]?.getTime?.() ?? undefined : undefined;
-  const lastOutgoingSentAt = lastOutgoingMessage?.sentAt ? new Date(lastOutgoingMessage.sentAt).getTime() : undefined;
-
-  const readReceipt =
-    lastOutgoingMessage && lastOutgoingSentAt && opponentReadAt
-      ? opponentReadAt >= lastOutgoingSentAt
-        ? "Read"
-        : "Delivered"
-      : null;
 
   useEffect(() => {
     if (!open) return;
@@ -426,42 +414,8 @@ export function ChatDock({
   );
 
   useEffect(() => {
-    if (!open || !ready) return;
-    void refreshMessages();
-  }, [open, ready, refreshMessages]);
-
-  useEffect(() => {
-    if (!ready || !chatId) return;
-    if (realtimeConnected) return;
-    const interval = window.setInterval(() => {
-      void refreshMessages();
-    }, 5000);
-    return () => window.clearInterval(interval);
-  }, [chatId, ready, realtimeConnected, refreshMessages]);
-
-  useEffect(() => {
-    if (!open || !ready || !latestMessage) return;
-    if (!latestMessage.sentAt || latestMessage.senderId === userId) return;
-
-    const tryMarkRead = () => {
-      if (document.visibilityState !== "visible") return;
-      const messageTime = new Date(latestMessage.sentAt!).getTime();
-      if (!Number.isFinite(messageTime)) return;
-      if (messageTime <= selfReadAt) return;
-      markMessagesRead({ lastSeenAt: latestMessage.sentAt! });
-    };
-
-    tryMarkRead();
-
-    const handleVisibilityChange = () => tryMarkRead();
-    window.addEventListener("focus", handleVisibilityChange);
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-
-    return () => {
-      window.removeEventListener("focus", handleVisibilityChange);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, [open, ready, latestMessage, markMessagesRead, selfReadAt, userId]);
+    // Firestore listeners will auto-sync when chat opens
+  }, [open, ready]);
 
   const handleBubblePointerDown = useCallback(
     (event: ReactPointerEvent<HTMLButtonElement>) => {
@@ -538,15 +492,24 @@ export function ChatDock({
     setOpen((previous) => !previous);
   }, [suppressToggleRef]);
 
+  // Track last opened time locally to show "new" messages since open
+  const [lastOpenedAt, setLastOpenedAt] = useState<number>(Date.now());
+
+  useEffect(() => {
+    if (open) {
+      setLastOpenedAt(Date.now());
+    }
+  }, [open]);
+
   const computedUnread = useMemo(() => {
-    if (!messages.length || open) return 0; // No unread if chat is open
+    if (!messages.length || open) return 0;
     return messages.reduce((total, entry) => {
       if (entry.senderId === userId || !entry.sentAt) return total;
       const sentAt = new Date(entry.sentAt).getTime();
-      if (!Number.isFinite(sentAt)) return total;
-      return sentAt > selfReadAt ? total + 1 : total;
+      if (sentAt > lastOpenedAt) return total + 1;
+      return total;
     }, 0);
-  }, [messages, selfReadAt, userId, open]);
+  }, [messages, userId, open, lastOpenedAt]);
 
   const totalUnread = Math.max(unreadCount, computedUnread);
   const derivedUnread = totalUnread > 0;
@@ -699,7 +662,7 @@ export function ChatDock({
                       ? "bottom right"
                       : "top right"
                   }}
-                  className="w-[min(420px,calc(100vw-3rem))] rounded-[28px] border bg-white/95 p-6 shadow-[0_20px_60px_rgba(0,0,0,0.15)] backdrop-blur-2xl dark:border-white/10 dark:bg-gradient-to-b dark:from-[#0c0f19]/95 dark:via-[#0c0f19]/90 dark:to-[#0c0f19]/85 dark:text-white border-gray-200 text-gray-900 max-h-[80vh] flex flex-col"
+                  className="w-[min(500px,calc(100vw-3rem))] rounded-[28px] border bg-white/95 p-6 shadow-[0_20px_60px_rgba(0,0,0,0.15)] backdrop-blur-2xl dark:border-white/10 dark:bg-gradient-to-b dark:from-[#0c0f19]/95 dark:via-[#0c0f19]/90 dark:to-[#0c0f19]/85 dark:text-white border-gray-200 text-gray-900 max-h-[80vh] flex flex-col"
                 >
                   <div className="flex items-center justify-between gap-3">
                     <div>
@@ -709,7 +672,7 @@ export function ChatDock({
                     </div>
                   </div>
 
-                  <div className="mt-6 max-h-80 space-y-3 overflow-y-auto px-4 scrollbar-hide overscroll-contain" ref={scrollRef}>
+                  <div className="mt-6 max-h-80 overflow-y-auto px-0 scrollbar-hide overscroll-contain" ref={scrollRef}>
                     <LayoutGroup>
                       <AnimatePresence initial={false}>
                         {messages.map((entry: ChatMessage, index: number) => {
@@ -720,36 +683,40 @@ export function ChatDock({
                             : "bg-[#E9E9EB] text-gray-900 dark:bg-white/10 dark:text-white";
 
                           // Check if previous message was from same sender
+                          // Check if previous message was from same sender
                           const prevMessage = index > 0 ? messages[index - 1] : null;
-                          const isGroupStart = !prevMessage || prevMessage.senderId !== entry.senderId;
+                          const nextMessage = index < messages.length - 1 ? messages[index + 1] : null;
+                          const isGroupStart = index === 0 || messages[index - 1].senderId !== entry.senderId;
+                          const isGroupEnd = index === messages.length - 1 || messages[index + 1].senderId !== entry.senderId;
 
                           const isActive = contextMenu?.messageId === entry.id;
 
                           return (
                             <motion.div
-                              key={entry.id}
+                              key={entry.clientMessageId || entry.id}
                               layout={!isMobile}
                               initial={{ opacity: 0, y: 10, scale: 0.95 }}
                               animate={{
                                 opacity: 1,
                                 y: 0,
                                 scale: isActive ? 1.15 : 1,
-                                zIndex: isActive ? 50 : 0,
-                                filter: isActive ? "drop-shadow(0 10px 20px rgba(0,0,0,0.3))" : (contextMenu ? (isMobile ? "opacity(0.3)" : "blur(2px) opacity(0.5)") : "none")
+                                zIndex: isActive ? 9999 : 0,
+                                filter: (contextMenu && isActive) ? "drop-shadow(0 10px 20px rgba(0,0,0,0.3))" : "none"
                               }}
                               exit={{ opacity: 0, y: -10, scale: 0.9 }}
                               transition={{ type: "spring", stiffness: 500, damping: 30 }}
                               className={cn(
-                                "flex gap-3 items-end relative",
-                                isSelf ? "justify-end" : "justify-start"
+                                "flex gap-1.5 md:gap-3 items-end relative",
+                                isSelf ? "justify-end" : "justify-start",
+                                isGroupEnd ? "mb-4" : "mb-1"
                               )}
                               onContextMenu={(e) => handleContextMenu(e, entry.id)}
                               {...bindLongPress(entry.id)}
                               data-message-bubble
                               style={{ WebkitTouchCallout: "none" }}
                             >
-                              {!isSelf && isGroupStart && (
-                                <Avatar className="h-9 w-9 border border-gray-300 dark:border-white/15">
+                              {!isSelf && isGroupEnd ? (
+                                <Avatar className="h-7 w-7 md:h-9 md:w-9 border border-gray-300 dark:border-white/15">
                                   {participant?.photoURL ? (
                                     <AvatarImage src={participant.photoURL} alt={participant?.displayName ?? "Player"} />
                                   ) : (
@@ -758,20 +725,19 @@ export function ChatDock({
                                     </AvatarFallback>
                                   )}
                                 </Avatar>
+                              ) : !isSelf && (
+                                <div className="w-7 md:w-9" />
                               )}
-                              {!isSelf && !isGroupStart && (
-                                <div className="w-9" />
-                              )}
-                              <div className="flex flex-col gap-1 max-w-[80%]">
-                                {isGroupStart && (
-                                  <p className="text-[0.65rem] uppercase tracking-[0.35em] text-gray-500 dark:text-white/50 px-1">
-                                    {participant?.displayName ?? (isSelf ? "You" : "Player")}
-                                  </p>
-                                )}
-                                <div className={cn(
-                                  "inline-block rounded-[20px] px-4 py-2.5 text-[15px] leading-snug relative",
-                                  bubbleColors
-                                )}>
+                              <div className="flex flex-col gap-1 max-w-[80%] relative group">
+                                <div
+                                  className={cn(
+                                    "relative px-4 py-2 text-xs md:text-sm shadow-sm transition-all",
+                                    isSelf
+                                      ? "bg-[#0B84FE] text-white rounded-2xl rounded-tr-sm"
+                                      : "bg-[#f68131] text-white dark:bg-white/10 dark:text-white rounded-2xl rounded-tl-sm"
+                                  )}
+                                  onContextMenu={(e) => handleContextMenu(e, entry.id)}
+                                >
                                   {entry.replyTo && (
                                     <div className="mb-2 rounded-2xl border bg-white/20 px-3 py-2 text-xs border-gray-300 dark:border-white/20 dark:bg-white/10">
                                       <p className="text-[0.6rem] uppercase tracking-[0.35em] text-gray-600 dark:text-white/70">
@@ -780,27 +746,37 @@ export function ChatDock({
                                       <p className="line-clamp-2 text-gray-800 dark:text-white/90">{trimPreview(entry.replyTo.text)}</p>
                                     </div>
                                   )}
-                                  <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] select-none">{entry.text}</p>
-                                  {entry.reactions && entry.reactions[userId!] && (
-                                    <button
-                                      className="absolute -bottom-3 -right-3 flex h-9 w-9 items-center justify-center rounded-full bg-white shadow-sm text-xl border border-gray-200 dark:bg-gray-800 dark:border-gray-700 z-10 hover:scale-110 transition-transform"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        void sendReaction(entry.id, entry.reactions![userId!]);
-                                      }}
-                                    >
-                                      {entry.reactions[userId!]}
-                                    </button>
+                                  <p className="whitespace-pre-wrap break-words leading-relaxed">{entry.text}</p>
+
+                                  {/* Reactions */}
+                                  {entry.reactions && Object.keys(entry.reactions).length > 0 && (
+                                    <div className={cn(
+                                      "absolute -bottom-2 flex gap-0.5",
+                                      isSelf ? "-left-2" : "-right-2"
+                                    )}>
+                                      {Object.entries(entry.reactions).map(([uid, emoji]) => (
+                                        <button
+                                          key={uid}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            if (uid === user?.uid) {
+                                              handleReaction(emoji);
+                                            }
+                                          }}
+                                          className={cn(
+                                            "flex h-6 w-6 items-center justify-center rounded-full bg-white text-xs shadow-sm ring-1 ring-black/5 dark:bg-gray-800 dark:ring-white/10 transition-transform hover:scale-110",
+                                            uid === user?.uid && "ring-blue-500 dark:ring-blue-400"
+                                          )}
+                                        >
+                                          {emoji}
+                                        </button>
+                                      ))}
+                                    </div>
                                   )}
                                 </div>
-                                {isSelf && entry.id === lastOutgoingMessage?.id && readReceipt && (
-                                  <p className="mt-1 text-[0.6rem] uppercase tracking-[0.35em] text-gray-500 dark:text-white/45 px-1">
-                                    {readReceipt}
-                                  </p>
-                                )}
                               </div>
-                              {isSelf && isGroupStart && (
-                                <Avatar className="h-9 w-9 border border-gray-300 dark:border-white/15">
+                              {isSelf && isGroupEnd ? (
+                                <Avatar className="h-7 w-7 md:h-9 md:w-9 border border-gray-300 dark:border-white/15">
                                   {participant?.photoURL ? (
                                     <AvatarImage src={participant.photoURL} alt={participant?.displayName ?? "Player"} />
                                   ) : (
@@ -809,9 +785,8 @@ export function ChatDock({
                                     </AvatarFallback>
                                   )}
                                 </Avatar>
-                              )}
-                              {isSelf && !isGroupStart && (
-                                <div className="w-9" />
+                              ) : isSelf && (
+                                <div className="w-7 md:w-9" />
                               )}
                             </motion.div>
                           );
@@ -864,7 +839,15 @@ export function ChatDock({
                       </AnimatePresence>
                       <Textarea
                         value={message}
-                        onChange={(event) => setMessage(event.target.value)}
+                        onChange={(event) => {
+                          setMessage(event.target.value);
+                          // Throttle typing updates to every 2 seconds
+                          const now = Date.now();
+                          if (now - lastTypingSentRef.current > 2000) {
+                            sendTyping(true);
+                            lastTypingSentRef.current = now;
+                          }
+                        }}
                         onKeyDown={handleKeyDown}
                         onFocus={() => notifyComposerFocus(true)}
                         onBlur={() => notifyComposerFocus(false)}
@@ -963,20 +946,21 @@ export function ChatDock({
               onClick={(e) => e.stopPropagation()}
             >
               {/* Reactions */}
-              <div className="flex justify-between px-2 py-2 mb-1 bg-white/10 rounded-xl">
+              <div className="flex justify-between px-2 py-2 mb-1 bg-white/10 rounded-xl border border-transparent dark:border-transparent">
                 {[
-                  { icon: Heart, label: "Love" },
-                  { icon: ThumbsUp, label: "Like" },
-                  { icon: Laugh, label: "Haha" },
-                  { icon: Frown, label: "Sad" },
-                  { icon: Angry, label: "Angry" },
+                  { emoji: "❤️", label: "Love" },
+                  { emoji: "👍", label: "Like" },
+                  { emoji: "😂", label: "Haha" },
+                  { emoji: "😮", label: "Wow" },
+                  { emoji: "😢", label: "Sad" },
+                  { emoji: "😡", label: "Angry" },
                 ].map((reaction, i) => (
                   <button
                     key={i}
-                    className="p-1.5 hover:bg-white/20 rounded-full transition-colors text-gray-700 dark:text-white"
-                    onClick={() => handleReaction(reaction.label === "Love" ? "❤️" : reaction.label === "Like" ? "👍" : reaction.label === "Haha" ? "😂" : reaction.label === "Sad" ? "😢" : "😡")}
+                    className="p-2 hover:bg-white/20 hover:scale-110 active:scale-95 rounded-full transition-all text-xl border border-transparent hover:border-gray-200 dark:hover:border-white/10"
+                    onClick={() => handleReaction(reaction.emoji)}
                   >
-                    <reaction.icon className="w-5 h-5" />
+                    {reaction.emoji}
                   </button>
                 ))}
                 <button
@@ -1023,7 +1007,7 @@ export function ChatDock({
               {/* Actions */}
               <div className="flex flex-col gap-1">
                 <button
-                  className="flex items-center gap-3 px-3 py-2.5 text-sm font-medium text-gray-700 dark:text-white hover:bg-white/10 rounded-xl transition-colors w-full text-left"
+                  className="flex items-center gap-3 px-3 py-2.5 text-sm font-medium text-gray-700 dark:text-white hover:bg-white/10 hover:scale-[1.02] active:scale-[0.98] rounded-xl transition-all w-full text-left border border-transparent hover:border-gray-200 dark:hover:border-white/10"
                   onClick={() => {
                     const msg = messages.find(m => m.id === contextMenu.messageId);
                     if (msg) handleReplyFromMenu(msg);
@@ -1033,7 +1017,7 @@ export function ChatDock({
                   Reply
                 </button>
                 <button
-                  className="flex items-center gap-3 px-3 py-2.5 text-sm font-medium text-gray-700 dark:text-white hover:bg-white/10 rounded-xl transition-colors w-full text-left"
+                  className="flex items-center gap-3 px-3 py-2.5 text-sm font-medium text-gray-700 dark:text-white hover:bg-white/10 hover:scale-[1.02] active:scale-[0.98] rounded-xl transition-all w-full text-left border border-transparent hover:border-gray-200 dark:hover:border-white/10"
                   onClick={() => {
                     const msg = messages.find(m => m.id === contextMenu.messageId);
                     if (msg) handleCopy(msg.text);

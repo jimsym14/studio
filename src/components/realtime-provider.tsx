@@ -119,7 +119,7 @@ export function RealtimeProvider({ children }: { children: ReactNode }) {
       }
     };
 
-    void connect();
+    // void connect();
 
     return () => {
       cancelled = true;

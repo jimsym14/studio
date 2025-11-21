@@ -92,10 +92,10 @@ interface GraffitiBackgroundProps {
 }
 
 export function GraffitiBackground({ position = 'fixed', zIndex = -10, className }: GraffitiBackgroundProps = {}) {
-  const letters = useMemo(() => generateLetters(80), []);
+  const isMobile = useIsMobile();
+  const letters = useMemo(() => generateLetters(isMobile ? 12 : 30), [isMobile]);
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const [windowSize, setWindowSize] = useState({ width: 0, height: 0 });
-  const isMobile = useIsMobile();
 
   useEffect(() => {
     const handleResize = () => {
@@ -105,7 +105,7 @@ export function GraffitiBackground({ position = 'fixed', zIndex = -10, className
     const handleMouseMove = (event: MouseEvent) => {
       setMousePos({ x: event.clientX, y: event.clientY });
     };
-    
+
     handleResize(); // Set initial size on client mount
     window.addEventListener('resize', handleResize);
 
