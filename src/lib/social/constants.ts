@@ -17,5 +17,5 @@ export type ChatScope = (typeof CHAT_SCOPES)[number];
 export const MAX_FRIEND_REQUEST_MESSAGE_LENGTH = 280;
 export const MAX_CHAT_MESSAGE_LENGTH = 1000;
 
-export const NOTIFICATION_TYPES = ['chat-entry', 'friend-request', 'friend-accept'] as const;
+export const NOTIFICATION_TYPES = ['chat-entry', 'friend-request', 'friend-accept', 'game-invite'] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];

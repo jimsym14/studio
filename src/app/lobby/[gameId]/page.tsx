@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { motion } from 'framer-motion';
 import { useTheme } from 'next-themes';
 import {
@@ -38,6 +38,7 @@ import { readLobbyAccess, rememberLobbyAccess } from '@/lib/lobby-access';
 import { readLobbyPasscode, rememberLobbyPasscode } from '@/lib/lobby-passcode';
 import { isGuestProfile } from '@/types/user';
 import { runWithFirestoreRetry } from '@/lib/firestore-retry';
+import { useGamePresence } from '@/hooks/use-game-presence';
 
 const LOBBY_GRACE_MINUTES = 2;
 const WAITING_FOR_PLAYER_MINUTES = 10;
@@ -92,8 +93,8 @@ const formatTurnSettingLabel = (value?: string | null) => {
 };
 
 const abbreviateId = (value: string) => {
-  if (value.length <= 8) return value.toUpperCase();
-  return `${value.slice(0, 4)}…${value.slice(-3)}`.toUpperCase();
+  if (value.length <= 8) return value;
+  return `${value.slice(0, 4)}…${value.slice(-3)}`;
 };
 
 const rotateOrderToPlayer = (order: string[], firstPlayerId: string | null) => {
@@ -213,6 +214,8 @@ export default function LobbyPage() {
   const { db, userId, user, profile } = useFirebase();
   const { resolvedTheme } = useTheme();
   const { toast } = useToast();
+  const gameId = params?.gameId as string;
+  const { activePlayers: realtimePlayers } = useGamePresence(gameId);
 
   const [game, setGame] = useState<GameDocument | null>(null);
   const [loading, setLoading] = useState(true);
@@ -227,7 +230,6 @@ export default function LobbyPage() {
   const lobbyCloseAlertedRef = useRef(false);
   const inactivityAlertedRef = useRef(false);
 
-  const gameId = params.gameId as string;
   const isDarkTheme = resolvedTheme === 'dark';
   const guest = profile ? isGuestProfile(profile) : false;
   const signedIn = Boolean(user);
@@ -370,8 +372,8 @@ export default function LobbyPage() {
 
         setGame(nextGameData);
 
-  const players = nextGameData.players ?? [];
-  const isPlayer = Boolean(userId && players.includes(userId));
+        const players = nextGameData.players ?? [];
+        const isPlayer = Boolean(userId && players.includes(userId));
 
         if (passProtected && !isPlayer && !cachedMatch) {
           setLoading(false);
@@ -413,43 +415,43 @@ export default function LobbyPage() {
           try {
             await runWithFirestoreRetry(() =>
               runTransaction(db, async (transaction) => {
-              const freshSnapshot = await transaction.get(gameRef);
-              if (!freshSnapshot.exists()) return;
-              const freshData = freshSnapshot.data() as GameDocument;
-              if (freshData.status !== 'waiting') return;
+                const freshSnapshot = await transaction.get(gameRef);
+                if (!freshSnapshot.exists()) return;
+                const freshData = freshSnapshot.data() as GameDocument;
+                if (freshData.status !== 'waiting') return;
 
-              const roster = Array.from(
-                new Set((freshData.players ?? []).filter((id): id is string => Boolean(id)))
-              );
-              if (roster.length < 2) return;
+                const roster = Array.from(
+                  new Set((freshData.players ?? []).filter((id): id is string => Boolean(id)))
+                );
+                if (roster.length < 2) return;
 
-              const baseOrder = (freshData.turnOrder ?? []).length
-                ? (freshData.turnOrder ?? []).filter((id): id is string => Boolean(id))
-                : roster;
-              const existingTurnPlayer = freshData.currentTurnPlayerId && roster.includes(freshData.currentTurnPlayerId)
-                ? freshData.currentTurnPlayerId
-                : null;
-              const chosenTurnPlayer = existingTurnPlayer ?? pickRandomPlayerId(roster);
-              const rotatedOrder = !freshData.turnOrder?.length
-                ? rotateOrderToPlayer(baseOrder, chosenTurnPlayer)
-                : baseOrder;
+                const baseOrder = (freshData.turnOrder ?? []).length
+                  ? (freshData.turnOrder ?? []).filter((id): id is string => Boolean(id))
+                  : roster;
+                const existingTurnPlayer = freshData.currentTurnPlayerId && roster.includes(freshData.currentTurnPlayerId)
+                  ? freshData.currentTurnPlayerId
+                  : null;
+                const chosenTurnPlayer = existingTurnPlayer ?? pickRandomPlayerId(roster);
+                const rotatedOrder = !freshData.turnOrder?.length
+                  ? rotateOrderToPlayer(baseOrder, chosenTurnPlayer)
+                  : baseOrder;
 
-              const updatePayload: Partial<GameDocument> & Record<string, unknown> = {
-                status: 'in_progress',
-                inactivityClosesAt: null,
-                matchHardStopAt:
-                  freshData.matchHardStopAt ?? addMinutesIso(new Date().toISOString(), MATCH_HARD_STOP_MINUTES),
-              };
+                const updatePayload: Partial<GameDocument> & Record<string, unknown> = {
+                  status: 'in_progress',
+                  inactivityClosesAt: null,
+                  matchHardStopAt:
+                    freshData.matchHardStopAt ?? addMinutesIso(new Date().toISOString(), MATCH_HARD_STOP_MINUTES),
+                };
 
-              if (!freshData.turnOrder?.length && rotatedOrder.length) {
-                updatePayload.turnOrder = rotatedOrder;
-              }
-              if (chosenTurnPlayer) {
-                updatePayload.currentTurnPlayerId = chosenTurnPlayer;
-              }
+                if (!freshData.turnOrder?.length && rotatedOrder.length) {
+                  updatePayload.turnOrder = rotatedOrder;
+                }
+                if (chosenTurnPlayer) {
+                  updatePayload.currentTurnPlayerId = chosenTurnPlayer;
+                }
 
-              transaction.update(gameRef, updatePayload);
-            })
+                transaction.update(gameRef, updatePayload);
+              })
             );
             toast({ title: 'Players ready', description: 'Launching the board…' });
           } catch (error) {
@@ -558,6 +560,39 @@ export default function LobbyPage() {
     router.push('/');
   }, [router]);
 
+  const searchParams = useSearchParams();
+  const urlPasscode = searchParams?.get('passcode');
+
+  const verifyPasscode = useCallback(async (code: string) => {
+    if (!game?.passcodeHash) return false;
+
+    setIsVerifyingPasscode(true);
+    setPasscodeError(null);
+    try {
+      const trimmedPasscode = code.trim();
+      const hashed = await hashToHex(trimmedPasscode);
+      if (hashed !== game.passcodeHash) {
+        setPasscodeError('That passcode does not match.');
+        return false;
+      }
+      rememberLobbyAccess(gameId, hashed);
+      setCachedAccessHash(hashed);
+      rememberLobbyPasscode(gameId, trimmedPasscode);
+      setRememberedPasscode(trimmedPasscode);
+      setPasscodeInput('');
+      // Clear the query param from URL without reloading
+      const newUrl = window.location.pathname;
+      window.history.replaceState({}, '', newUrl);
+      return true;
+    } catch (error) {
+      console.error('Failed to verify lobby passcode', error);
+      setPasscodeError('Unable to verify passcode. Try again.');
+      return false;
+    } finally {
+      setIsVerifyingPasscode(false);
+    }
+  }, [game?.passcodeHash, gameId]);
+
   const handleVerifyPasscode = useCallback(async () => {
     if (!game?.passcodeHash) {
       setPasscodeError('This lobby no longer accepts new players.');
@@ -567,27 +602,15 @@ export default function LobbyPage() {
       setPasscodeError('Enter the passcode first.');
       return;
     }
-    setIsVerifyingPasscode(true);
-    setPasscodeError(null);
-    try {
-      const trimmedPasscode = passcodeInput.trim();
-      const hashed = await hashToHex(trimmedPasscode);
-      if (hashed !== game.passcodeHash) {
-        setPasscodeError('That passcode does not match.');
-        return;
-      }
-      rememberLobbyAccess(gameId, hashed);
-      setCachedAccessHash(hashed);
-      rememberLobbyPasscode(gameId, trimmedPasscode);
-      setRememberedPasscode(trimmedPasscode);
-      setPasscodeInput('');
-    } catch (error) {
-      console.error('Failed to verify lobby passcode', error);
-      setPasscodeError('Unable to verify passcode. Try again.');
-    } finally {
-      setIsVerifyingPasscode(false);
+    await verifyPasscode(passcodeInput);
+  }, [game?.passcodeHash, passcodeInput, verifyPasscode]);
+
+  // Auto-verify passcode from URL
+  useEffect(() => {
+    if (urlPasscode && game?.passcodeHash && !cachedAccessHash) {
+      void verifyPasscode(urlPasscode);
     }
-  }, [game?.passcodeHash, gameId, passcodeInput]);
+  }, [urlPasscode, game?.passcodeHash, cachedAccessHash, verifyPasscode]);
 
   const trackedPlayerIds = game?.players ?? [];
   const { getPlayerName } = usePlayerNames({ db, playerIds: trackedPlayerIds });
@@ -622,7 +645,7 @@ export default function LobbyPage() {
   const playersList = trackedPlayerIds;
   const activePlayersList = game.activePlayers ?? [];
   const totalPlayers = playersList.length;
-  const activePlayersCount = activePlayersList.length;
+  const activePlayersCount = realtimePlayers.length > 0 ? realtimePlayers.filter(p => p.online).length : (game.activePlayers ?? []).length;
   const waitingForPlayers = game.status === 'waiting';
   const lobbyCountdown = formatDuration(game.lobbyClosesAt ?? null, now);
   const inactivityCountdown = formatDuration(game.inactivityClosesAt ?? null, now);

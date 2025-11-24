@@ -2,16 +2,17 @@ export type FriendActivityMode = 'solo' | 'pvp' | 'coop';
 
 export type FriendActivityState =
   | {
-      kind: 'waiting';
-      mode: FriendActivityMode;
-      lobbyId?: string | null;
-      passcodeRequired?: boolean;
-    }
+    kind: 'waiting';
+    mode: FriendActivityMode;
+    lobbyId?: string | null;
+    passcodeRequired?: boolean;
+    passcode?: string | null;
+  }
   | {
-      kind: 'playing';
-      mode: FriendActivityMode;
-      gameId?: string | null;
-    }
+    kind: 'playing';
+    mode: FriendActivityMode;
+    gameId?: string | null;
+  }
   | {
     kind: 'online';
     lastInteractionAt?: string | null;
@@ -41,9 +42,14 @@ export type FriendRequestSummary = {
   message?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
+  otherUser?: {
+    username?: string | null;
+    displayName?: string | null;
+    photoURL?: string | null;
+  };
 };
 
-export type NotificationType = 'chat-entry' | 'friend-request' | 'friend-accept';
+export type NotificationType = 'chat-entry' | 'friend-request' | 'friend-accept' | 'game-invite';
 
 export type NotificationItem = {
   id: string;

@@ -94,6 +94,96 @@ const isMissingIndexError = (error: unknown) => {
   return false;
 };
 
+const GAMES_COLLECTION = 'games';
+
+/**
+ * Fetches a user's current activity by querying the games collection
+ * for active games/lobbies where the user is present
+ */
+export const getUserActivity = async (userId: string): Promise<import('@/types/social').FriendActivityState | null> => {
+  try {
+    // Query for games where user is in activePlayers and game is recent
+    // Filter to only games that have been active in the last 10 minutes to avoid stale data
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+
+    const snapshot = await adminDb
+      .collection(GAMES_COLLECTION)
+      .where('activePlayers', 'array-contains', userId)
+      .where('status', 'in', ['waiting', 'in_progress'])
+      .where('lastActivityAt', '>=', tenMinutesAgo)
+      .orderBy('lastActivityAt', 'desc')
+      .limit(1)
+      .get();
+
+    if (snapshot.empty) {
+      // User is not in any active lobby or game
+      return { kind: 'online' };
+    }
+
+    const gameDoc = snapshot.docs[0];
+    const game = gameDoc.data() as {
+      status: string;
+      gameType?: string | null;
+      multiplayerMode?: string | null;
+      id?: string;
+      activePlayers?: string[];
+    };
+
+    const gameId = gameDoc.id;
+
+    // Double-check user is still in activePlayers (in case of race condition)
+    if (!game.activePlayers?.includes(userId)) {
+      return { kind: 'online' };
+    }
+
+    // Determine if user is waiting in lobby or playing
+    if (game.status === 'waiting') {
+      // User is in a lobby
+      let mode: import('@/types/social').FriendActivityMode = 'solo';
+
+      if (game.gameType === 'multiplayer') {
+        if (game.multiplayerMode === 'co-op') {
+          mode = 'coop';
+        } else if (game.multiplayerMode === 'pvp') {
+          mode = 'pvp';
+        }
+      }
+
+      return {
+        kind: 'waiting',
+        mode,
+        lobbyId: gameId,
+      };
+    }
+
+    if (game.status === 'in_progress') {
+      // User is in an active game
+      let mode: import('@/types/social').FriendActivityMode = 'solo';
+
+      if (game.gameType === 'multiplayer') {
+        if (game.multiplayerMode === 'co-op') {
+          mode = 'coop';
+        } else if (game.multiplayerMode === 'pvp') {
+          mode = 'pvp';
+        }
+      }
+
+      return {
+        kind: 'playing',
+        mode,
+        gameId,
+      };
+    }
+
+    // Fallback to online if status is unexpected
+    return { kind: 'online' };
+  } catch (error) {
+    console.error('Failed to fetch user activity', userId, error);
+    // On error, assume user is online but without specific activity
+    return { kind: 'online' };
+  }
+};
+
 export const listFriends = async (userId: string): Promise<FriendSummary[]> => {
   const snapshot = await adminDb
     .collection(FRIENDSHIPS_COLLECTION)
@@ -109,7 +199,11 @@ export const listFriends = async (userId: string): Promise<FriendSummary[]> => {
   const summaries = await Promise.all(
     records.map(async (record) => {
       const otherUserId = record.userIds.find((uid) => uid !== userId) ?? userId;
-      const profile = await fetchProfileById(otherUserId);
+      const [profile, activity] = await Promise.all([
+        fetchProfileById(otherUserId),
+        getUserActivity(otherUserId),
+      ]);
+
       return {
         friendshipId: record.id,
         userId: otherUserId,
@@ -117,7 +211,7 @@ export const listFriends = async (userId: string): Promise<FriendSummary[]> => {
         displayName: profile?.displayName ?? profile?.username ?? null,
         photoURL: profile?.photoURL ?? null,
         lastInteractionAt: record.lastInteractionAt ? record.lastInteractionAt.toDate().toISOString() : null,
-        activity: null,
+        activity,
       } satisfies FriendSummary;
     })
   );
@@ -152,18 +246,28 @@ export const listFriendRequests = async (
 
   if (snapshot.empty) return [];
 
-  const summaries = snapshot.docs.map((doc) => {
-    const data = doc.data() as FriendRequestRecord;
-    return {
-      id: doc.id,
-      from: data.from,
-      to: data.to,
-      status: data.status,
-      message: data.message ?? null,
-      createdAt: data.createdAt ? data.createdAt.toDate().toISOString() : null,
-      updatedAt: data.updatedAt ? data.updatedAt.toDate().toISOString() : null,
-    } satisfies FriendRequestSummary;
-  });
+  const summaries = await Promise.all(
+    snapshot.docs.map(async (doc) => {
+      const data = doc.data() as FriendRequestRecord;
+      const otherUserId = direction === 'incoming' ? data.from : data.to;
+      const profile = await fetchProfileById(otherUserId);
+
+      return {
+        id: doc.id,
+        from: data.from,
+        to: data.to,
+        status: data.status,
+        message: data.message ?? null,
+        createdAt: data.createdAt ? data.createdAt.toDate().toISOString() : null,
+        updatedAt: data.updatedAt ? data.updatedAt.toDate().toISOString() : null,
+        otherUser: {
+          username: profile?.username ?? null,
+          displayName: profile?.displayName ?? null,
+          photoURL: profile?.photoURL ?? null,
+        }
+      } satisfies FriendRequestSummary;
+    })
+  );
 
   return summaries.sort((a, b) => {
     const aTime = a.updatedAt ?? a.createdAt ?? '';

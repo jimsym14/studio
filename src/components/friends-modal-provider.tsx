@@ -13,12 +13,17 @@ import { socialGet } from "@/lib/social-client";
 import type { FriendRequestSummary } from "@/types/social";
 import type { FriendRealtimeEvent } from "@/types/realtime";
 
+import { useUnreadChats } from "@/hooks/use-unread-chats";
+
 export type FriendsModalContextValue = {
   openFriendsModal: () => void;
   setFriendsModalOpen: (open: boolean) => void;
   isFriendsModalOpen: boolean;
   pendingRequestCount: number;
+  unreadChatCount: number;
+  unreadChatIds: Set<string>;
   refreshPendingRequests: () => Promise<void>;
+  setOnOpenInviteSettings: (callback: (friendId: string, username: string, passcode: string) => void) => void;
 };
 
 const FriendsModalContext = createContext<FriendsModalContextValue | undefined>(undefined);
@@ -30,8 +35,10 @@ export function FriendsModalProvider({ children }: { children: ReactNode }) {
   const { toast } = useToast();
   const guest = profile ? isGuestProfile(profile) : false;
   const [pendingRequestCount, setPendingRequestCount] = useState(0);
+  const { totalUnread: unreadChatCount, unreadChatIds } = useUnreadChats();
   const canUseFriends = Boolean(user) && !guest;
   const { socket } = useRealtime();
+  const [inviteSettingsCallback, setInviteSettingsCallback] = useState<((friendId: string, username: string, passcode: string) => void) | null>(null);
 
   const openFriendsModal = useCallback(() => {
     if (!user) {
@@ -64,6 +71,10 @@ export function FriendsModalProvider({ children }: { children: ReactNode }) {
     }
   }, [canUseFriends]);
 
+  const setOnOpenInviteSettings = useCallback((callback: (friendId: string, username: string, passcode: string) => void) => {
+    setInviteSettingsCallback(() => callback);
+  }, []);
+
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void refreshPendingRequests();
@@ -90,9 +101,12 @@ export function FriendsModalProvider({ children }: { children: ReactNode }) {
       setFriendsModalOpen: setOpen,
       isFriendsModalOpen: open,
       pendingRequestCount,
+      unreadChatCount,
+      unreadChatIds,
       refreshPendingRequests,
+      setOnOpenInviteSettings,
     }),
-    [open, openFriendsModal, pendingRequestCount, refreshPendingRequests]
+    [open, openFriendsModal, pendingRequestCount, unreadChatCount, unreadChatIds, refreshPendingRequests, setOnOpenInviteSettings]
   );
 
   return (
@@ -103,6 +117,8 @@ export function FriendsModalProvider({ children }: { children: ReactNode }) {
         onOpenChange={setOpen}
         onPendingCountChange={setPendingRequestCount}
         refreshPendingRequests={refreshPendingRequests}
+        unreadChatIds={unreadChatIds}
+        onOpenInviteSettings={inviteSettingsCallback || undefined}
       />
     </FriendsModalContext.Provider>
   );

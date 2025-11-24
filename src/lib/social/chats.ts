@@ -325,10 +325,27 @@ export const sendChatMessage = async (
   }
 
   const newMessageRef = await messagesRef.add(payload);
+
+  // Update chat metadata
   await adminDb
     .collection(CHATS_COLLECTION)
     .doc(chatId)
     .update({ lastMessageAt: now, [`readReceipts.${senderId}`]: now });
+
+  // Update ALL memberships with the new lastMessageAt so unread badges update
+  const batch = adminDb.batch();
+  chat.memberIds.forEach((memberId) => {
+    const ref = adminDb.collection(CHAT_MEMBERSHIPS_COLLECTION).doc(buildMembershipId(chatId, memberId));
+    const updateData: Record<string, unknown> = { lastMessageAt: now, updatedAt: now };
+
+    // If this is the sender, also update lastReadAt so they don't see their own message as unread
+    if (memberId === senderId) {
+      updateData.lastReadAt = now;
+    }
+
+    batch.set(ref, updateData, { merge: true });
+  });
+  await batch.commit();
 
   const messageRecord: ChatMessagePayload = {
     id: newMessageRef.id,

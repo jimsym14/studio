@@ -103,7 +103,7 @@ export async function createGame(
   if (!creatorId) {
     throw new Error("Creator ID is missing. The client must provide the user's UID.");
   }
-  
+
   if (!firebaseConfig?.apiKey) {
     throw new Error('Firebase config is missing.');
   }
@@ -153,7 +153,7 @@ export async function createGame(
     const normalizedLength = Math.max(4, Math.min(6, wordLength));
     const solution = normalizeWord(getRandomWord(normalizedLength));
     const maxAttempts = 6;
-    
+
     const createdAt = new Date().toISOString();
     const initialStatus = gameSettings.gameType === 'multiplayer' ? 'waiting' : 'in_progress';
     const matchMinutes = parseMinutes(gameSettings.matchTime);
@@ -167,14 +167,15 @@ export async function createGame(
       ...gameSettings,
       wordLength: normalizedLength,
       creatorId,
-  creatorDisplayName: creatorDisplayName || null,
+      creatorDisplayName: creatorDisplayName || null,
       visibility: lobbyVisibility,
       hasPasscode,
+      passcode: lobbyVisibility === 'private' ? normalizedPasscode : null,
       passcodeHash,
       status: initialStatus,
       players: [creatorId],
       activePlayers: [creatorId],
-  playerAliases: creatorDisplayName ? { [creatorId]: creatorDisplayName } : {},
+      playerAliases: creatorDisplayName ? { [creatorId]: creatorDisplayName } : {},
       turnOrder: [],
       currentTurnPlayerId: null,
       createdAt,
@@ -185,10 +186,10 @@ export async function createGame(
       endVotes: [],
       completionMessage: null,
       endedBy: null,
-  lobbyClosesAt: null,
-  lastActivityAt: createdAt,
-  inactivityClosesAt: initialStatus === 'waiting' ? addMinutes(createdAt, WAITING_MINUTES) : null,
-  matchHardStopAt: initialHardStop,
+      lobbyClosesAt: null,
+      lastActivityAt: createdAt,
+      inactivityClosesAt: initialStatus === 'waiting' ? addMinutes(createdAt, WAITING_MINUTES) : null,
+      matchHardStopAt: initialHardStop,
       matchDeadline: initialMatchDeadline,
       turnDeadline: null,
       completedAt: null,

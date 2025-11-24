@@ -36,6 +36,7 @@ import { ChatDock } from '@/components/chat-dock';
 import { isGuestProfile } from '@/types/user';
 import type { ChatAvailability, ChatContextDescriptor } from '@/types/social';
 import { runWithFirestoreRetry } from '@/lib/firestore-retry';
+import { useGamePresence } from '@/hooks/use-game-presence';
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -96,8 +97,8 @@ const addSecondsIso = (iso: string, seconds: number | null) => {
 };
 
 const abbreviateId = (value: string) => {
-  if (value.length <= 8) return value.toUpperCase();
-  return `${value.slice(0, 4)}…${value.slice(-3)}`.toUpperCase();
+  if (value.length <= 8) return value;
+  return `${value.slice(0, 4)}…${value.slice(-3)}`;
 };
 
 const formatCountdown = (deadline: string | null | undefined, now: number) => {
@@ -248,6 +249,7 @@ export default function GamePage() {
   }, [clearDisconnectCountdown]);
 
   const gameId = params?.gameId ? String(params.gameId) : '';
+  const { activePlayers: realtimePlayers, loading: presenceLoading } = useGamePresence(gameId);
   const guest = profile ? isGuestProfile(profile) : false;
   const chatAvailability: ChatAvailability = user && !guest ? 'persistent' : 'guest-blocked';
   const isPlayer = Boolean(userId && game?.players?.includes(userId));
@@ -259,8 +261,8 @@ export default function GamePage() {
   const displayedGameId = useMemo(() => abbreviateId(gameId ?? ''), [gameId]);
   const compactGameId = useMemo(() => {
     if (!gameId) return '';
-    if (gameId.length <= 4) return gameId.toUpperCase();
-    return `${gameId.slice(0, 4).toUpperCase()}…`;
+    if (gameId.length <= 4) return gameId;
+    return `${gameId.slice(0, 4)}…`;
   }, [gameId]);
   const turnOrder = game?.turnOrder?.length ? game.turnOrder : game?.players ?? [];
   const isMultiplayerGame = game?.gameType === 'multiplayer' && turnOrder.length > 0;
@@ -664,7 +666,7 @@ export default function GamePage() {
   }, [db, game?.lobbyClosesAt, game?.status, gameId, now, router, toast]);
 
   useEffect(() => {
-    if (!db || !game || !isMultiplayerGame || game.status !== 'in_progress') {
+    if (!db || !game || !isMultiplayerGame || game.status !== 'in_progress' || presenceLoading) {
       clearDisconnectTimer();
       setMissingPlayerNames((prev) => (prev.length ? [] : prev));
       disconnectDrawHandledRef.current = false;
@@ -672,8 +674,12 @@ export default function GamePage() {
     }
 
     const allPlayers = (game.players ?? []).filter((id): id is string => Boolean(id));
-    const activeSet = new Set((game.activePlayers ?? []).filter(Boolean));
+    // Use RTDB presence for accurate disconnect detection
+    const activeSet = new Set(realtimePlayers.filter(p => p.online).map(p => p.userId));
     const activeCount = activeSet.size;
+
+    // Only consider it a disconnect if we have at least one player connected (us)
+    // and fewer connected players than total players
     const hasMissingPlayer = allPlayers.length >= 2 && activeCount > 0 && activeCount < allPlayers.length;
 
     if (!hasMissingPlayer) {

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
-import { Globe, LogIn, LogOut, Settings, UserPlus } from 'lucide-react';
+import { Globe, LogIn, LogOut, Settings, UserPlus, BarChart3 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 
 import { Button } from '@/components/ui/button';
@@ -95,10 +95,10 @@ export function UserMenu({ className, variant = 'chip' }: UserMenuProps) {
     variant === 'icon'
       ? cn('relative flex h-12 w-12 items-center justify-center rounded-full border border-border/40 bg-black/30 p-0 text-white', className)
       : cn(
-          'group flex min-w-[210px] items-center gap-4 rounded-full border border-border/50 px-6 py-4 text-sm font-semibold shadow-sm transition hover:border-border',
-          'w-full justify-between sm:w-auto sm:justify-start',
-          className
-        );
+        'group flex min-w-[210px] items-center gap-4 rounded-full border border-border/50 px-6 py-4 text-sm font-semibold shadow-sm transition hover:border-border',
+        'w-full justify-between sm:w-auto sm:justify-start',
+        className
+      );
   const avatarClasses = variant === 'icon' ? 'h-10 w-10 border border-border/40 shadow-inner' : 'h-12 w-12 border border-border/40 shadow-inner';
 
   const showNotificationBadge = !guest && notificationCount > 0;
@@ -113,9 +113,6 @@ export function UserMenu({ className, variant = 'chip' }: UserMenuProps) {
               <AvatarImage src={profile?.photoURL ?? undefined} alt={username} />
               <AvatarFallback>{initials(username)}</AvatarFallback>
             </Avatar>
-            {showNotificationBadge && (
-              <span className="absolute -top-1 -right-1 h-2.5 w-2.5 rounded-full bg-rose-500 ring-2 ring-background dark:ring-background/80" />
-            )}
           </span>
           {variant === 'chip' ? (
             <div className="flex flex-col text-left leading-tight">
@@ -152,6 +149,10 @@ export function UserMenu({ className, variant = 'chip' }: UserMenuProps) {
         </DropdownMenuItem>
         {!guest && (
           <>
+            <DropdownMenuItem className="cursor-pointer" onClick={() => router.push('/statistics')}>
+              <BarChart3 className="mr-2 h-4 w-4" />
+              Statistics
+            </DropdownMenuItem>
             <DropdownMenuItem className="cursor-pointer" onClick={() => router.push('/settings')}>
               <Settings className="mr-2 h-4 w-4" />
               Profile settings

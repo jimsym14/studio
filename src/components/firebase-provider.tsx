@@ -21,6 +21,8 @@ import {
 } from 'firebase/auth';
 import type { Firestore } from 'firebase/firestore';
 import { doc, onSnapshot } from 'firebase/firestore';
+import type { Database } from 'firebase/database';
+import { ref, onValue, set, onDisconnect, serverTimestamp } from 'firebase/database';
 
 import { initializeFirebase } from '@/lib/firebase';
 import type { UserPreferences, UserProfile } from '@/types/user';
@@ -69,6 +71,7 @@ interface FirebaseContextType {
   app: FirebaseApp | null;
   auth: Auth | null;
   db: Firestore | null;
+  rtdb: Database | null;
   user: User | null;
   userId: string | null;
   profile: UserProfile | null;
@@ -99,7 +102,7 @@ export function FirebaseProvider({ children }: { children: ReactNode }) {
   const [sessionAttempt, setSessionAttempt] = useState(0);
   const sessionDisableToastShownRef = useRef(false);
 
-  const { app, auth, db } = firebaseSingleton;
+  const { app, auth, db, rtdb } = firebaseSingleton;
 
   const stopHeartbeat = useCallback(() => {
     if (heartbeatRef.current) {
@@ -202,8 +205,8 @@ export function FirebaseProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-  let cancelled = false;
-  const sessionId = generateSessionId();
+    let cancelled = false;
+    const sessionId = generateSessionId();
     sessionIdRef.current = sessionId;
     activeUidRef.current = user.uid;
     setSessionStatus('pending');
@@ -360,6 +363,38 @@ export function FirebaseProvider({ children }: { children: ReactNode }) {
     };
   }, [db, user]);
 
+  // Presence tracking with Firebase Realtime Database
+  useEffect(() => {
+    if (!rtdb || !user || user.isAnonymous) return;
+
+    const connectedRef = ref(rtdb, '.info/connected');
+    const presenceRef = ref(rtdb, `presence/${user.uid}`);
+
+    const unsubscribe = onValue(connectedRef, (snapshot) => {
+      if (snapshot.val() === true) {
+        // Set user as online
+        set(presenceRef, {
+          online: true,
+          lastSeen: serverTimestamp(),
+        }).catch((error) => {
+          console.error('Failed to set presence', error);
+        });
+
+        // Set user as offline when disconnected
+        onDisconnect(presenceRef)
+          .set({
+            online: false,
+            lastSeen: serverTimestamp(),
+          })
+          .catch((error) => {
+            console.error('Failed to set disconnect handler', error);
+          });
+      }
+    });
+
+    return () => unsubscribe();
+  }, [rtdb, user]);
+
   const handleSignOut = useCallback(async () => {
     await releaseSessionLockIfNeeded();
     if (!auth) return;
@@ -375,13 +410,16 @@ export function FirebaseProvider({ children }: { children: ReactNode }) {
       } catch (error) {
         console.error('Failed to persist preferences', error);
       }
-    }, [db, user]);
+    },
+    [db, user]
+  );
 
   const value = useMemo<FirebaseContextType>(
     () => ({
-        app,
-        auth,
-        db,
+      app,
+      auth,
+      db,
+      rtdb,
       user,
       userId: user?.uid ?? null,
       profile,
@@ -398,6 +436,7 @@ export function FirebaseProvider({ children }: { children: ReactNode }) {
       app,
       auth,
       db,
+      rtdb,
       user,
       profile,
       profileReady,

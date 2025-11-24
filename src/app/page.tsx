@@ -1,6 +1,6 @@
 'use client';
 
- import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useTheme } from 'next-themes';
 import { Compass, Crown, User, UserPlus, Users } from 'lucide-react';
@@ -20,6 +20,7 @@ import { cn } from '@/lib/utils';
 import { useOnlinePlayers } from '@/hooks/use-online-players';
 import { useFriendsModal } from '@/components/friends-modal-provider';
 import { useOverviewStats, type LeaderboardStat } from '@/hooks/use-overview-stats';
+import { LobbyInviteToast } from '@/components/lobby-invite-toast';
 
 type GameType = 'solo' | 'multiplayer';
 
@@ -29,6 +30,9 @@ export default function Home() {
   const [modalState, setModalState] = useState<{
     isOpen: boolean;
     gameType: GameType | null;
+    inviteFriendId?: string;
+    inviteFriendUsername?: string;
+    prefilledPasscode?: string;
   }>({ isOpen: false, gameType: null });
 
   const [activeMode, setActiveMode] = useState<GameType>('solo');
@@ -41,10 +45,24 @@ export default function Home() {
   const { count: livePlayersOnline, live: livePlayersEnabled } = useOnlinePlayers();
   const { resolvedTheme } = useTheme();
   const isLightMode = resolvedTheme === 'light';
-  const { openFriendsModal, pendingRequestCount } = useFriendsModal();
+  const { openFriendsModal, pendingRequestCount, unreadChatCount, setOnOpenInviteSettings } = useFriendsModal();
   const heroGlowDark = 'radial-gradient(circle, hsl(var(--primary) / 0.55) 0%, hsl(var(--hero-glow-soft) / 0.9) 45%, hsl(var(--hero-glow-strong) / 0.08) 75%)';
   const heroGlowLight = 'radial-gradient(circle, rgba(255, 143, 53, 0.8) 0%, rgba(255, 193, 134, 0.78) 40%, rgba(255, 175, 110, 0.35) 65%, rgba(255, 160, 96, 0.12) 80%)';
   const heroGlowBackground = isLightMode ? heroGlowLight : heroGlowDark;
+
+  // Register callback for opening settings modal with invite friend datar
+  useEffect(() => {
+    const handleOpenInviteSettings = (friendId: string, username: string, passcode: string) => {
+      setModalState({
+        isOpen: true,
+        gameType: 'multiplayer',
+        inviteFriendId: friendId,
+        inviteFriendUsername: username,
+        prefilledPasscode: passcode,
+      });
+    };
+    setOnOpenInviteSettings(handleOpenInviteSettings);
+  }, [setOnOpenInviteSettings]);
 
   const modeConfig: Record<
     GameType,
@@ -256,69 +274,71 @@ export default function Home() {
         <div className="pointer-events-none absolute inset-0 rounded-[36px] border border-white/5" />
         <div className="pointer-events-none absolute -right-16 top-8 h-64 w-64 rounded-full blur-[140px] opacity-70" style={{ background: activeDetails.gradient }} />
 
-        <div className="relative z-10 mb-6 w-full lg:hidden">
-          <GreetingChanger />
-        </div>
+        <div className="flex flex-col lg:block">
+          <div className="relative z-10 mb-6 w-full order-1 lg:hidden lg:order-none">
+            <GreetingChanger />
+          </div>
 
-        <div className="relative z-10 mb-1 w-full sm:mb-1">
-          <div
-            className={cn(
-              'flex w-full items-center gap-3 rounded-[28px] px-4 py-3 text-sm transition-colors duration-300 sm:gap-5 backdrop-blur-xl',
-              isLightMode
-                ? 'glass-panel-strong text-slate-900'
-                : 'border border-white/15 bg-black/25 text-white shadow-[inset_6px_6px_18px_rgba(0,0,0,0.5),inset_-4px_-4px_12px_rgba(255,255,255,0.05)]'
-            )}
-          >
-            <div className="flex flex-1 items-center gap-3">
-              <UserMenu variant="icon" className="h-11 w-11 shrink-0" />
-              <div className="min-w-0">
-                <p
-                  className={cn(
-                    'text-[0.55rem] uppercase tracking-[0.4em]',
-                    isLightMode ? 'text-slate-600' : 'text-white/60'
-                  )}
-                >
-                  {statusLabel}
-                </p>
-                <p
-                  className={cn(
-                    'truncate text-base font-semibold sm:text-lg',
-                    isLightMode ? 'text-slate-900' : 'text-white'
-                  )}
-                  title={displayName}
-                >
-                  {displayName}
-                </p>
-              </div>
-            </div>
-            <div className="flex items-center gap-2 sm:gap-3">
-              <Button
-                type="button"
-                size="icon"
-                variant="ghost"
-                onClick={handleFriendsClick}
-                className={cn(
-                  'relative h-10 w-10 border bg-transparent',
-                  isLightMode ? 'border-slate/60 bg-white/60 text-slate-900' : 'border-white/25 text-white'
-                )}
-                aria-label="Open friends and chats"
-              >
-                <UserPlus className="h-5 w-5" />
-                <span className="sr-only">Open friends</span>
-                {pendingRequestCount > 0 && (
-                  <span
-                    className="absolute -right-1 -top-1 flex h-5 min-w-[1.3rem] items-center justify-center rounded-full bg-destructive px-1 text-[0.65rem] font-semibold text-destructive-foreground"
+          <div className="relative z-10 mb-1 w-full sm:mb-1 order-2 lg:order-none">
+            <div
+              className={cn(
+                'flex w-full items-center gap-3 rounded-[28px] px-4 py-3 text-sm transition-colors duration-300 sm:gap-5 backdrop-blur-xl',
+                isLightMode
+                  ? 'glass-panel-strong text-slate-900'
+                  : 'border border-white/15 bg-black/25 text-white shadow-[inset_6px_6px_18px_rgba(0,0,0,0.5),inset_-4px_-4px_12px_rgba(255,255,255,0.05)]'
+              )}
+            >
+              <div className="flex flex-1 items-center gap-3">
+                <UserMenu variant="icon" className="h-11 w-11 shrink-0" />
+                <div className="min-w-0">
+                  <p
+                    className={cn(
+                      'text-[0.55rem] uppercase tracking-[0.4em]',
+                      isLightMode ? 'text-slate-600' : 'text-white/60'
+                    )}
                   >
-                    {pendingRequestCount > 99 ? '99+' : pendingRequestCount}
-                  </span>
-                )}
-              </Button>
-              <ThemeToggle
-                className={cn(
-                  'h-10 w-10 rounded-full border',
-                  isLightMode ? 'border-slate/60 bg-white/60 text-slate-900' : 'border-white/25 text-white'
-                )}
-              />
+                    {statusLabel}
+                  </p>
+                  <p
+                    className={cn(
+                      'truncate text-base font-semibold sm:text-lg',
+                      isLightMode ? 'text-slate-900' : 'text-white'
+                    )}
+                    title={displayName}
+                  >
+                    {displayName}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 sm:gap-3">
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  onClick={handleFriendsClick}
+                  className={cn(
+                    'relative h-10 w-10 border bg-transparent',
+                    isLightMode ? 'border-slate/60 bg-white/60 text-slate-900' : 'border-white/25 text-white'
+                  )}
+                  aria-label="Open friends and chats"
+                >
+                  <UserPlus className="h-5 w-5" />
+                  <span className="sr-only">Open friends</span>
+                  {(pendingRequestCount > 0 || unreadChatCount > 0) && (
+                    <span
+                      className="absolute -right-1 -top-1 flex h-5 min-w-[1.3rem] items-center justify-center rounded-full bg-destructive px-1 text-[0.65rem] font-semibold text-destructive-foreground"
+                    >
+                      {pendingRequestCount + unreadChatCount > 99 ? '99+' : pendingRequestCount + unreadChatCount}
+                    </span>
+                  )}
+                </Button>
+                <ThemeToggle
+                  className={cn(
+                    'h-10 w-10 rounded-full border',
+                    isLightMode ? 'border-slate/60 bg-white/60 text-slate-900' : 'border-white/25 text-white'
+                  )}
+                />
+              </div>
             </div>
           </div>
         </div>
@@ -410,7 +430,11 @@ export default function Home() {
         isOpen={modalState.isOpen}
         gameType={modalState.gameType}
         onClose={() => setModalState({ isOpen: false, gameType: null })}
+        inviteFriendId={modalState.inviteFriendId}
+        inviteFriendUsername={modalState.inviteFriendUsername}
+        prefilledPasscode={modalState.prefilledPasscode}
       />
+      <LobbyInviteToast />
     </div>
   );
 }

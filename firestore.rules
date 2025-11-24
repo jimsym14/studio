@@ -43,5 +43,17 @@ service cloud.firestore {
         allow write: if isAuthenticated() && request.auth.uid == userId;
       }
     }
+
+    // --- Chat Memberships (for unread counts) ---
+    match /chat_memberships/{membershipId} {
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow write: if false; // Managed by server
+    }
+
+    // --- Notifications ---
+    match /notifications/{notificationId} {
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow write: if false; // Managed by server
+    }
   }
 }

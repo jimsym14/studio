@@ -8,6 +8,7 @@ import { useToast } from '@/hooks/use-toast';
 import type { ChatContextDescriptor } from '@/types/social';
 import type { ChatMessagePayload } from '@/types/chat';
 import { socialPost } from '@/lib/social-client';
+import { useChatTyping } from '@/hooks/use-chat-typing';
 
 const generateClientMessageId = () => {
     if (typeof crypto !== 'undefined' && crypto.randomUUID) {
@@ -114,9 +115,10 @@ export function useChatRoom({ context, enabled = true }: UseChatRoomOptions) {
     const [chatId, setChatId] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [sending, setSending] = useState(false);
-    const [typingUsers, setTypingUsers] = useState<string[]>([]);
+    // typingUsers is now derived from useChatTyping hook
     const [membership, setMembership] = useState<{ lastReadAt?: Date } | null>(null);
     const [lastMessageAt, setLastMessageAt] = useState<Date | null>(null);
+    const [readReceipts, setReadReceipts] = useState<Record<string, Date>>({});
     const lastMarkedReadAtRef = useRef(0);
     const refreshInFlightRef = useRef(false);
     const pendingRefreshRef = useRef(false);
@@ -347,6 +349,10 @@ export function useChatRoom({ context, enabled = true }: UseChatRoomOptions) {
                     }
                 });
 
+                console.log('[use-chat-room] Read receipts updated:', parsedReceipts);
+                // Update state with all read receipts
+                setReadReceipts(parsedReceipts);
+
                 // Update own membership lastReadAt if available in readReceipts
                 if (userId && parsedReceipts[userId]) {
                     const myReadAt = parsedReceipts[userId];
@@ -362,20 +368,43 @@ export function useChatRoom({ context, enabled = true }: UseChatRoomOptions) {
         };
     }, [chatId, db, userId]);
 
-    const markMessagesRead = useCallback((options?: { lastSeenAt?: string }) => {
-        if (!socket || !connected || !chatId || !userId) return;
+    const markMessagesRead = useCallback(async (options?: { lastSeenAt?: string }) => {
         const latest = options?.lastSeenAt ?? messages[messages.length - 1]?.sentAt;
-        if (!latest) return;
+        if (!latest) {
+            console.log('[markMessagesRead] No latest message timestamp');
+            return;
+        }
+        if (!chatId || !userId) {
+            console.log('[markMessagesRead] Missing chatId or userId');
+            return;
+        }
+
         const timestamp = new Date(latest).getTime();
         if (!Number.isFinite(timestamp)) return;
-        if (timestamp <= lastMarkedReadAtRef.current) return;
+        if (timestamp <= lastMarkedReadAtRef.current) {
+            console.log('[markMessagesRead] Already marked as read');
+            return;
+        }
         lastMarkedReadAtRef.current = timestamp;
 
         // Optimistic update: immediately update local state
         const readAtDate = new Date(latest);
         setMembership(current => ({ ...(current ?? {}), lastReadAt: readAtDate }));
 
-        socket.emit('chat:mark-read', { chatId, lastSeenAt: latest });
+        // Try socket first, fallback to API if socket unavailable
+        if (socket && connected) {
+            console.log('[markMessagesRead] Emitting via socket');
+            socket.emit('chat:mark-read', { chatId, lastSeenAt: latest });
+        } else {
+            console.log('[markMessagesRead] Socket not available, using API fallback');
+            try {
+                const result = await socialPost('/api/chats/mark-read', { chatId, lastSeenAt: latest });
+                console.log('[markMessagesRead] API call succeeded:', result);
+            } catch (error) {
+                console.error('[markMessagesRead] API call error:', error);
+                // Don't throw - optimistic update already happened
+            }
+        }
     }, [socket, connected, chatId, userId, messages]);
 
     const sendMessage = useCallback(async (text: string, options?: { replyTo?: ChatMessage | null }) => {
@@ -430,61 +459,13 @@ export function useChatRoom({ context, enabled = true }: UseChatRoomOptions) {
         prevConnectionRef.current = connected;
     }, [chatId, connected, refreshMessages]);
 
-    // Firestore typing listener
-    useEffect(() => {
-        if (!chatId || !db) return;
-        const typingRef = collection(db, 'chats', chatId, 'typing');
+    // RTDB Typing Indicators
+    const { typingUsers: rtdbTypingUsers, setIsTyping: sendTyping } = useChatTyping(chatId);
 
-        // Store raw typing data to be filtered periodically
-        let rawTypingData: Record<string, number> = {};
-
-        const updateTypingUsers = () => {
-            const now = Date.now();
-            const active = Object.entries(rawTypingData)
-                .filter(([uid, ts]) => uid !== userId && (now - ts) < 5000) // 5s timeout
-                .map(([uid]) => uid);
-            setTypingUsers(prev => {
-                // Only update if changed to avoid re-renders
-                if (prev.length === active.length && prev.every(id => active.includes(id))) return prev;
-                return active;
-            });
-        };
-
-        const unsubscribe = onSnapshot(typingRef, (snapshot) => {
-            rawTypingData = {};
-            snapshot.docs.forEach(doc => {
-                const data = doc.data();
-                const ts = data.timestamp instanceof Timestamp ? data.timestamp.toMillis() : 0;
-                rawTypingData[doc.id] = ts;
-            });
-            updateTypingUsers();
-        });
-
-        const interval = setInterval(updateTypingUsers, 1000);
-
-        return () => {
-            unsubscribe();
-            clearInterval(interval);
-        };
-    }, [chatId, db, userId]);
-
-    const sendTyping = useCallback(async (isTyping: boolean) => {
-        if (!chatId || !userId || !db) return;
-        const typingRef = doc(db, 'chats', chatId, 'typing', userId);
-
-        try {
-            if (isTyping) {
-                await setDoc(typingRef, {
-                    isTyping: true,
-                    timestamp: serverTimestamp(),
-                });
-            } else {
-                await deleteDoc(typingRef);
-            }
-        } catch (err) {
-            console.warn('Failed to update typing status', err);
-        }
-    }, [chatId, userId, db]);
+    // Map RTDB typing users to simple string array of user IDs for compatibility
+    const typingUsers = useMemo(() =>
+        rtdbTypingUsers.filter(u => u.userId !== userId).map(u => u.userId),
+        [rtdbTypingUsers, userId]);
 
     const sendReaction = useCallback(async (messageId: string, emoji: string) => {
         if (!chatId || !userId) return;
@@ -538,6 +519,8 @@ export function useChatRoom({ context, enabled = true }: UseChatRoomOptions) {
         refreshMessages,
         typingUsers,
         sendTyping,
-        sendReaction
+        sendReaction,
+        markMessagesRead,
+        readReceipts
     };
 }

@@ -11,6 +11,7 @@ export interface GameDocument {
   multiplayerMode?: 'pvp' | 'co-op' | null;
   visibility: LobbyVisibility;
   hasPasscode: boolean;
+  passcode?: string | null;
   passcodeHash: string | null;
   status: GameStatus;
   players: string[];

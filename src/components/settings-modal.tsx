@@ -31,6 +31,8 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Separator } from '@/components/ui/separator';
 import { createGame } from '@/lib/actions/game';
 import { rememberLobbyPasscode } from '@/lib/lobby-passcode';
+import { sendGameInviteAction } from '@/lib/actions/notifications';
+import { socialPost } from '@/lib/social-client';
 import { useToast } from '@/hooks/use-toast';
 import { useFirebase } from '@/components/firebase-provider';
 import { cn } from '@/lib/utils';
@@ -41,6 +43,9 @@ interface SettingsModalProps {
   isOpen: boolean;
   gameType: GameType;
   onClose: () => void;
+  inviteFriendId?: string;
+  inviteFriendUsername?: string;
+  prefilledPasscode?: string;
 }
 
 const passcodeField = z
@@ -86,28 +91,32 @@ const firebaseConfig = {
 };
 
 
-export function SettingsModal({ isOpen, gameType, onClose }: SettingsModalProps) {
+export function SettingsModal({ isOpen, gameType, onClose, inviteFriendId, inviteFriendUsername, prefilledPasscode }: SettingsModalProps) {
   const router = useRouter();
   const { toast } = useToast();
   const { theme } = useTheme();
   const { userId, user, profile } = useFirebase();
   const [multiplayerMode, setMultiplayerMode] = useState<'pvp' | 'co-op'>('pvp');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [hoveredButton, setHoveredButton] = useState<string | null>(null);
-  const [clickedButton, setClickedButton] = useState<string | null>(null);
+
   const isAuthReady = Boolean(userId);
 
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
-    defaultValues: FORM_DEFAULTS,
+    defaultValues: inviteFriendId && prefilledPasscode
+      ? { ...FORM_DEFAULTS, visibility: 'private', passcode: prefilledPasscode }
+      : FORM_DEFAULTS,
   });
 
   useEffect(() => {
     if (isOpen) {
-      form.reset(FORM_DEFAULTS);
+      const defaults = inviteFriendId && prefilledPasscode
+        ? { ...FORM_DEFAULTS, visibility: 'private' as const, passcode: prefilledPasscode }
+        : FORM_DEFAULTS;
+      form.reset(defaults);
       setMultiplayerMode('pvp');
     }
-  }, [isOpen, form]);
+  }, [isOpen, form, inviteFriendId, prefilledPasscode]);
 
   const visibilityValue = form.watch('visibility');
 
@@ -120,10 +129,10 @@ export function SettingsModal({ isOpen, gameType, onClose }: SettingsModalProps)
       });
       return;
     }
-    
+
     setIsSubmitting(true);
     try {
-  const cleanedPasscode = values.visibility === 'private' ? values.passcode : '';
+      const cleanedPasscode = values.visibility === 'private' ? values.passcode : '';
       const gameSettings = {
         ...values,
         passcode: cleanedPasscode ?? '',
@@ -138,11 +147,69 @@ export function SettingsModal({ isOpen, gameType, onClose }: SettingsModalProps)
       }
 
       const gameId = await createGame(gameSettings, firebaseConfig, authToken);
-      
+
       if (gameId) {
         if (values.visibility === 'private' && cleanedPasscode) {
           rememberLobbyPasscode(gameId, cleanedPasscode);
         }
+
+        // If inviting a friend, send the invite via chat
+        if (inviteFriendId) {
+          try {
+            const lobbyUrl = typeof window === 'undefined' ? `/lobby/${gameId}` : `${window.location.origin}/lobby/${gameId}`;
+            const lobbyUrlWithPasscode = cleanedPasscode ? `${lobbyUrl}?passcode=${cleanedPasscode}` : lobbyUrl;
+
+            // Send game invite notification
+            await sendGameInviteAction(inviteFriendId, gameId, cleanedPasscode || null, authToken);
+
+            // Open chat room and send message with the link
+            try {
+              const chatResponse = await socialPost<{ chat?: { chatId?: string } }>('/api/chats/open', {
+                context: 'friend',
+                userId: inviteFriendId,
+              });
+              const chatId = chatResponse.chat?.chatId;
+
+              if (chatId) {
+                const inviteMessage = cleanedPasscode
+                  ? `Join me: ${lobbyUrlWithPasscode} (code: ${cleanedPasscode})`
+                  : `Join me: ${lobbyUrlWithPasscode}`;
+
+                await socialPost('/api/chats/message', {
+                  chatId,
+                  text: inviteMessage,
+                });
+              }
+            } catch (chatError) {
+              console.warn('Failed to send chat message:', chatError);
+            }
+
+            // Copy to clipboard
+            if (typeof window !== 'undefined' && navigator?.clipboard?.writeText) {
+              const clipboardText = cleanedPasscode
+                ? `${lobbyUrlWithPasscode} (code: ${cleanedPasscode})`
+                : lobbyUrlWithPasscode;
+              navigator.clipboard
+                .writeText(clipboardText)
+                .catch(() => undefined);
+            }
+
+            toast({
+              title: values.visibility === 'private' ? 'Private lobby ready' : 'Lobby ready',
+              description: inviteFriendUsername
+                ? `Invitation sent to @${inviteFriendUsername}.`
+                : 'Invitation sent to your friend.',
+            });
+          } catch (inviteError) {
+            console.warn('Failed to send invite:', inviteError);
+            toast({
+              variant: 'destructive',
+              title: 'Lobby created but invite failed',
+              description: 'We copied the lobby link to your clipboard—send it manually.',
+            });
+          }
+        }
+
         router.push(gameType === 'multiplayer' ? `/lobby/${gameId}` : `/game/${gameId}`);
         onClose();
       } else {
@@ -161,186 +228,178 @@ export function SettingsModal({ isOpen, gameType, onClose }: SettingsModalProps)
   };
 
   const handleMultiplayerClick = (mode: 'pvp' | 'co-op') => {
-    setClickedButton(mode);
-    setTimeout(() => setClickedButton(null), 200);
     setMultiplayerMode(mode);
   };
 
-  const getButtonStyle = (buttonId: 'pvp' | 'co-op') => {
-    const isDark = theme === 'dark';
-    const isActive = multiplayerMode === buttonId;
-    const isHovered = hoveredButton === buttonId;
-    const isClicked = clickedButton === buttonId;
 
-    const orange = '#EE7C2B';
-    const bgColor = isDark ? '#151619' : '#F3F4F6';
-    const activeColor = isDark ? '#151619' : '#F3F4F6';
-
-    const baseStyle: React.CSSProperties = {
-        transition: 'all 0.05s cubic-bezier(0.25, 0.25, 0.75, 0.75)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        height: '3.5rem',
-        borderRadius: '1.5rem',
-        cursor: 'pointer',
-        border: 'none',
-        fontSize: '1rem',
-        fontWeight: 'bold',
-    };
-
-    if (isActive) {
-      return {
-        ...baseStyle,
-        backgroundColor: orange,
-        color: activeColor,
-        boxShadow: isDark
-          ? 'inset 8px 8px 16px #b8551f, inset -8px -8px 16px #ffa337'
-          : 'inset 8px 8px 16px #c96022, inset -8px -8px 16px #ff9834',
-        transform: isClicked 
-          ? 'scale(0.90)' 
-          : isHovered 
-            ? 'scale(0.96)' 
-            : 'scale(0.95)',
-      };
-    }
-    
-    return {
-      ...baseStyle,
-      backgroundColor: bgColor,
-      color: orange,
-      boxShadow: isDark 
-        ? isHovered
-          ? '14px 14px 28px #0a0b0c, -14px -14px 28px #202226, 0 0 40px rgba(238, 124, 43, 0.3)'
-          : '8px 8px 16px #0a0b0c, -8px -8px 16px #202226'
-        : isHovered
-          ? '14px 14px 28px #c8c9cb, -14px -14px 28px #ffffff, 0 0 40px rgba(238, 124, 43, 0.2)'
-          : '8px 8px 16px #d1d2d4, -8px -8px 16px #ffffff',
-      transform: isClicked
-        ? 'translateY(4px) scale(0.95)'
-        : isHovered 
-          ? 'translateY(-6px) scale(1.08)' 
-          : 'scale(1)',
-    };
-  };
 
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
       <AnimatePresence>
         {isOpen && (
-          <DialogContent className="max-w-md p-0 overflow-hidden">
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              transition={{ duration: 0.3, ease: 'easeOut' }}
-            >
-              <DialogHeader className="p-6 pb-4">
-                <DialogTitle className="flex items-center text-2xl">
-                  {gameType === 'solo' ? <Crown className="mr-2" /> : <Users className="mr-2" />}
-                  {gameType === 'solo' ? 'Singleplayer' : 'Multiplayer'} Settings
-                </DialogTitle>
-                <DialogDescription>
-                  Configure your game session.
-                </DialogDescription>
-              </DialogHeader>
+          <DialogContent className={cn(
+            "max-w-md w-[95vw] p-0 overflow-hidden max-h-[90vh] flex flex-col backdrop-blur-xl border-white/20 shadow-2xl",
+            gameType === 'solo'
+              ? "bg-[radial-gradient(circle_at_top_right,rgba(249,115,22,0.3)_0%,rgba(255,255,255,0.85)_40%,rgba(255,255,255,0.85)_100%)] dark:bg-[radial-gradient(circle_at_top_right,rgba(249,115,22,0.2)_0%,rgba(0,0,0,0.85)_40%,rgba(0,0,0,0.85)_100%)]"
+              : "bg-[radial-gradient(circle_at_top_right,rgba(16,185,129,0.3)_0%,rgba(255,255,255,0.85)_40%,rgba(255,255,255,0.85)_100%)] dark:bg-[radial-gradient(circle_at_top_right,rgba(16,185,129,0.2)_0%,rgba(0,0,0,0.85)_40%,rgba(0,0,0,0.85)_100%)]",
+            "rounded-3xl"
+          )}>
+            <DialogHeader className={cn(
+              "p-3 md:p-4 pb-2 md:pb-3 text-white shrink-0",
+              gameType === 'solo'
+                ? "bg-gradient-to-br from-amber-500 to-orange-600"
+                : "bg-gradient-to-br from-emerald-500 to-teal-600"
+            )}>
+              <DialogTitle className="flex items-center text-xl md:text-2xl font-comic tracking-wide text-white drop-shadow-md">
+                {gameType === 'solo' ? <Crown className="mr-2 h-5 w-5 md:h-6 md:w-6" /> : <Users className="mr-2 h-5 w-5 md:h-6 md:w-6" />}
+                {gameType === 'solo' ? 'Singleplayer' : 'Multiplayer'}
+              </DialogTitle>
+            </DialogHeader>
+
+            <div className="flex-1 overflow-y-auto px-3 md:px-4 py-3 md:py-4">
               <Form {...form}>
-                <form onSubmit={form.handleSubmit(handleStartGame)} id="settings-form" className="space-y-6 px-6">
+                <form onSubmit={form.handleSubmit(handleStartGame)} id="settings-form" className="space-y-3 md:space-y-4">
                   <FormField
                     control={form.control}
                     name="wordLength"
                     render={({ field }) => (
-                      <FormItem>
-                        <FormLabel className="flex items-center"><Gamepad2 className="mr-2 h-4 w-4" /> Word Length</FormLabel>
+                      <FormItem className="space-y-1.5 md:space-y-2">
+                        <FormLabel className="flex items-center text-sm md:text-base font-bold"><Gamepad2 className="mr-1.5 h-3.5 w-3.5 md:mr-2 md:h-4 md:w-4" /> Word Length</FormLabel>
                         <FormControl>
                           <RadioGroup
                             onValueChange={(value) => field.onChange(Number(value))}
                             defaultValue={String(field.value)}
                             className="grid grid-cols-3 gap-2"
                           >
-                            <FormItem><FormControl><RadioGroupItem value="4" id="wl-4" className="sr-only" /></FormControl><FormLabel htmlFor="wl-4" className={cn("flex items-center justify-center p-2 rounded-md border-2 border-muted bg-transparent hover:border-primary cursor-pointer", field.value === 4 && "bg-primary text-primary-foreground")}>4</FormLabel></FormItem>
-                            <FormItem><FormControl><RadioGroupItem value="5" id="wl-5" className="sr-only" /></FormControl><FormLabel htmlFor="wl-5" className={cn("flex items-center justify-center p-2 rounded-md border-2 border-muted bg-transparent hover:border-primary cursor-pointer", field.value === 5 && "bg-primary text-primary-foreground")}>5</FormLabel></FormItem>
-                            <FormItem><FormControl><RadioGroupItem value="6" id="wl-6" className="sr-only" /></FormControl><FormLabel htmlFor="wl-6" className={cn("flex items-center justify-center p-2 rounded-md border-2 border-muted bg-transparent hover:border-primary cursor-pointer", field.value === 6 && "bg-primary text-primary-foreground")}>6</FormLabel></FormItem>
+                            {[4, 5, 6].map((val) => (
+                              <FormItem key={val} className="space-y-0">
+                                <FormControl>
+                                  <RadioGroupItem value={String(val)} id={`wl-${val}`} className="sr-only" />
+                                </FormControl>
+                                <FormLabel
+                                  htmlFor={`wl-${val}`}
+                                  className={cn(
+                                    "flex flex-col items-center justify-center p-1.5 md:p-2 rounded-lg border-2 cursor-pointer transition-all duration-200 hover:scale-105",
+                                    field.value === val
+                                      ? cn(
+                                        "font-bold shadow-sm",
+                                        gameType === 'solo'
+                                          ? "border-orange-500 bg-orange-500/10 text-orange-600 dark:text-orange-400"
+                                          : "border-emerald-500 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                                      )
+                                      : "border-muted bg-background/50 hover:border-primary/50"
+                                  )}
+                                >
+                                  <span className="text-sm md:text-base font-bold font-moms">{val}</span>
+                                  <span className="text-[0.55rem] md:text-[0.6rem] uppercase tracking-wider text-muted-foreground font-moms">Letters</span>
+                                </FormLabel>
+                              </FormItem>
+                            ))}
                           </RadioGroup>
                         </FormControl>
                       </FormItem>
                     )}
                   />
-                  
+
                   <FormField
                     control={form.control}
                     name="matchTime"
                     render={({ field }) => (
-                       <FormItem>
-                         <FormLabel className="flex items-center"><Hourglass className="mr-2 h-4 w-4" /> Match Time</FormLabel>
-                         <FormControl>
+                      <FormItem className="space-y-1.5 md:space-y-2">
+                        <FormLabel className="flex items-center text-sm md:text-base font-bold"><Hourglass className="mr-1.5 h-3.5 w-3.5 md:mr-2 md:h-4 md:w-4" /> Match Time</FormLabel>
+                        <FormControl>
                           <RadioGroup
                             onValueChange={field.onChange}
                             defaultValue={field.value}
                             className="grid grid-cols-3 gap-2"
                           >
-                            <FormItem><FormControl><RadioGroupItem value="unlimited" id="m-unlimited" className="sr-only" /></FormControl><FormLabel htmlFor="m-unlimited" className={cn("flex items-center justify-center p-2 rounded-md border-2 border-muted bg-transparent hover:border-primary cursor-pointer", field.value === "unlimited" && "bg-primary text-primary-foreground")}>Unlimited</FormLabel></FormItem>
-                            <FormItem><FormControl><RadioGroupItem value="3" id="m-3" className="sr-only" /></FormControl><FormLabel htmlFor="m-3" className={cn("flex items-center justify-center p-2 rounded-md border-2 border-muted bg-transparent hover:border-primary cursor-pointer", field.value === "3" && "bg-primary text-primary-foreground")}>3:00</FormLabel></FormItem>
-                            <FormItem><FormControl><RadioGroupItem value="5" id="m-5" className="sr-only" /></FormControl><FormLabel htmlFor="m-5" className={cn("flex items-center justify-center p-2 rounded-md border-2 border-muted bg-transparent hover:border-primary cursor-pointer", field.value === "5" && "bg-primary text-primary-foreground")}>5:00</FormLabel></FormItem>
+                            {[
+                              { val: 'unlimited', label: '∞', sub: 'No Limit' },
+                              { val: '3', label: '3:00', sub: 'Minutes' },
+                              { val: '5', label: '5:00', sub: 'Minutes' }
+                            ].map((opt) => (
+                              <FormItem key={opt.val} className="space-y-0">
+                                <FormControl>
+                                  <RadioGroupItem value={opt.val} id={`m-${opt.val}`} className="sr-only" />
+                                </FormControl>
+                                <FormLabel
+                                  htmlFor={`m-${opt.val}`}
+                                  className={cn(
+                                    "flex flex-col items-center justify-center p-1.5 md:p-2 rounded-lg border-2 cursor-pointer transition-all duration-200 hover:scale-105",
+                                    field.value === opt.val
+                                      ? cn(
+                                        "font-bold shadow-sm",
+                                        gameType === 'solo'
+                                          ? "border-orange-500 bg-orange-500/10 text-orange-600 dark:text-orange-400"
+                                          : "border-emerald-500 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                                      )
+                                      : "border-muted bg-background/50 hover:border-primary/50"
+                                  )}
+                                >
+                                  <span className="text-sm md:text-base font-bold font-moms">{opt.label}</span>
+                                  <span className="text-[0.55rem] md:text-[0.6rem] uppercase tracking-wider text-muted-foreground font-moms">{opt.sub}</span>
+                                </FormLabel>
+                              </FormItem>
+                            ))}
                           </RadioGroup>
-                         </FormControl>
-                       </FormItem>
+                        </FormControl>
+                      </FormItem>
                     )}
                   />
 
                   {gameType === 'multiplayer' && (
                     <>
-                      <Separator />
+                      <Separator className="my-2" />
 
                       <FormField
                         control={form.control}
                         name="visibility"
                         render={({ field }) => (
-                          <FormItem>
-                            <FormLabel className="flex items-center">
-                              <Lock className="mr-2 h-4 w-4" /> Lobby visibility
+                          <FormItem className="space-y-1.5 md:space-y-2">
+                            <FormLabel className="flex items-center text-sm md:text-base font-bold">
+                              <Lock className="mr-1.5 h-3.5 w-3.5 md:mr-2 md:h-4 md:w-4" /> Lobby visibility
                             </FormLabel>
                             <FormControl>
                               <RadioGroup
                                 onValueChange={field.onChange}
                                 value={field.value}
-                                className="grid grid-cols-2 gap-3"
+                                className="grid grid-cols-2 gap-2"
                               >
-                                <FormItem>
+                                <FormItem className="space-y-0">
                                   <FormControl>
                                     <RadioGroupItem value="public" id="vis-public" className="sr-only" />
                                   </FormControl>
                                   <FormLabel
                                     htmlFor="vis-public"
                                     className={cn(
-                                      'flex flex-col gap-1 rounded-2xl border-2 border-muted bg-background/40 px-4 py-3 text-left text-sm font-semibold transition hover:border-primary/70',
-                                      field.value === 'public' && 'border-primary bg-primary/10 text-primary'
+                                      'flex flex-col gap-0.5 md:gap-1 rounded-xl border-2 border-muted bg-background/40 px-2.5 py-2 md:px-3 md:py-2 text-left text-sm font-semibold transition hover:border-primary/70 h-full',
+                                      field.value === 'public' && "border-emerald-500 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
                                     )}
                                   >
-                                    <span className="flex items-center gap-2 text-base">
-                                      <Unlock className="h-4 w-4" /> Public
+                                    <span className="flex items-center gap-1.5 text-xs md:text-sm">
+                                      <Unlock className="h-3 w-3" /> Public
                                     </span>
-                                    <span className="text-xs font-normal text-muted-foreground">
+                                    <span className="text-[0.6rem] md:text-[0.65rem] font-normal text-muted-foreground leading-tight">
                                       Listed in lobby browser with instant joins.
                                     </span>
                                   </FormLabel>
                                 </FormItem>
-                                <FormItem>
+                                <FormItem className="space-y-0">
                                   <FormControl>
                                     <RadioGroupItem value="private" id="vis-private" className="sr-only" />
                                   </FormControl>
                                   <FormLabel
                                     htmlFor="vis-private"
                                     className={cn(
-                                      'flex flex-col gap-1 rounded-2xl border-2 border-muted bg-background/40 px-4 py-3 text-left text-sm font-semibold transition hover:border-primary/70',
-                                      field.value === 'private' && 'border-primary bg-primary/10 text-primary'
+                                      'flex flex-col gap-0.5 md:gap-1 rounded-xl border-2 border-muted bg-background/40 px-2.5 py-2 md:px-3 md:py-2 text-left text-sm font-semibold transition hover:border-primary/70 h-full',
+                                      field.value === 'private' && "border-emerald-500 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
                                     )}
                                   >
-                                    <span className="flex items-center gap-2 text-base">
-                                      <Lock className="h-4 w-4" /> Private
+                                    <span className="flex items-center gap-1.5 text-xs md:text-sm">
+                                      <Lock className="h-3 w-3" /> Private
                                     </span>
-                                    <span className="text-xs font-normal text-muted-foreground">
+                                    <span className="text-[0.6rem] md:text-[0.65rem] font-normal text-muted-foreground leading-tight">
                                       Hidden in browse list. Share passcode manually.
                                     </span>
                                   </FormLabel>
@@ -358,15 +417,15 @@ export function SettingsModal({ isOpen, gameType, onClose }: SettingsModalProps)
                           name="passcode"
                           render={({ field }) => (
                             <FormItem>
-                              <FormLabel className="flex items-center">
-                                <Lock className="mr-2 h-4 w-4" /> Passcode
+                              <FormLabel className="flex items-center text-sm md:text-base font-bold">
+                                <Lock className="mr-1.5 h-3.5 w-3.5 md:mr-2 md:h-4 md:w-4" /> Passcode
                               </FormLabel>
                               <FormControl>
                                 <Input
                                   {...field}
                                   type="password"
                                   placeholder="Enter a secret phrase"
-                                  className="rounded-2xl border border-muted bg-background/40 px-4 py-5 text-base"
+                                  className="rounded-xl border border-muted bg-background/40 px-3 py-1.5 md:py-2 text-xs md:text-sm h-9 md:h-10 focus-visible:ring-emerald-500"
                                 />
                               </FormControl>
                               <FormMessage />
@@ -379,44 +438,75 @@ export function SettingsModal({ isOpen, gameType, onClose }: SettingsModalProps)
                         control={form.control}
                         name="turnTime"
                         render={({ field }) => (
-                          <FormItem>
-                            <FormLabel className="flex items-center"><Hourglass className="mr-2 h-4 w-4" /> Turn Time</FormLabel>
+                          <FormItem className="space-y-1.5 md:space-y-2">
+                            <FormLabel className="flex items-center text-sm md:text-base font-bold"><Hourglass className="mr-1.5 h-3.5 w-3.5 md:mr-2 md:h-4 md:w-4" /> Turn Time</FormLabel>
                             <FormControl>
                               <RadioGroup
                                 onValueChange={field.onChange}
                                 defaultValue={field.value}
                                 className="grid grid-cols-3 gap-2"
                               >
-                                <FormItem><FormControl><RadioGroupItem value="unlimited" id="t-unlimited" className="sr-only" /></FormControl><FormLabel htmlFor="t-unlimited" className={cn("flex items-center justify-center p-2 rounded-md border-2 border-muted bg-transparent hover:border-primary cursor-pointer", field.value === "unlimited" && "bg-primary text-primary-foreground")}>Unlimited</FormLabel></FormItem>
-                                <FormItem><FormControl><RadioGroupItem value="30" id="t-30" className="sr-only" /></FormControl><FormLabel htmlFor="t-30" className={cn("flex items-center justify-center p-2 rounded-md border-2 border-muted bg-transparent hover:border-primary cursor-pointer", field.value === "30" && "bg-primary text-primary-foreground")}>30s</FormLabel></FormItem>
-                                <FormItem><FormControl><RadioGroupItem value="60" id="t-60" className="sr-only" /></FormControl><FormLabel htmlFor="t-60" className={cn("flex items-center justify-center p-2 rounded-md border-2 border-muted bg-transparent hover:border-primary cursor-pointer", field.value === "60" && "bg-primary text-primary-foreground")}>60s</FormLabel></FormItem>
+                                {[
+                                  { val: 'unlimited', label: '∞', sub: 'No Limit' },
+                                  { val: '30', label: '30s', sub: 'Seconds' },
+                                  { val: '60', label: '60s', sub: 'Seconds' }
+                                ].map((opt) => (
+                                  <FormItem key={opt.val} className="space-y-0">
+                                    <FormControl>
+                                      <RadioGroupItem value={opt.val} id={`t-${opt.val}`} className="sr-only" />
+                                    </FormControl>
+                                    <FormLabel
+                                      htmlFor={`t-${opt.val}`}
+                                      className={cn(
+                                        "flex flex-col items-center justify-center p-1.5 md:p-2 rounded-lg border-2 cursor-pointer transition-all duration-200 hover:scale-105",
+                                        field.value === opt.val
+                                          ? "border-emerald-500 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-bold shadow-sm"
+                                          : "border-muted bg-background/50 hover:border-primary/50"
+                                      )}
+                                    >
+                                      <span className="text-sm md:text-base font-bold font-moms">{opt.label}</span>
+                                      <span className="text-[0.55rem] md:text-[0.6rem] uppercase tracking-wider text-muted-foreground font-moms">{opt.sub}</span>
+                                    </FormLabel>
+                                  </FormItem>
+                                ))}
                               </RadioGroup>
                             </FormControl>
                           </FormItem>
                         )}
                       />
 
-                      <Separator />
-                      <div className="space-y-2">
-                        <FormLabel>Multiplayer Mode</FormLabel>
-                        <div className="grid grid-cols-2 gap-4">
-                          <button 
+                      <Separator className="my-2" />
+                      <div className="space-y-1.5 md:space-y-2">
+                        <FormLabel className="text-sm md:text-base font-bold">Multiplayer Mode</FormLabel>
+                        <div className="grid grid-cols-2 gap-2 md:gap-3">
+                          <button
                             type="button"
-                            onMouseEnter={() => setHoveredButton('pvp')}
-                            onMouseLeave={() => setHoveredButton(null)}
                             onClick={() => handleMultiplayerClick('pvp')}
-                            style={getButtonStyle('pvp')}
+                            className={cn(
+                              "relative flex flex-col items-center justify-center gap-1 rounded-xl border-2 p-2 md:p-3 transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]",
+                              multiplayerMode === 'pvp'
+                                ? "border-emerald-500 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 shadow-sm"
+                                : "border-muted bg-background/50 text-muted-foreground hover:border-emerald-500/50 hover:text-emerald-600/80"
+                            )}
                           >
-                            <Swords className="mr-2 h-5 w-5" />PvP
+                            <Swords className={cn("h-5 w-5 md:h-6 md:w-6", multiplayerMode === 'pvp' ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground")} />
+                            <span className="text-sm md:text-base font-bold font-moms">PvP</span>
+                            <span className="text-[0.6rem] uppercase tracking-wider opacity-70 font-moms">Versus</span>
                           </button>
-                          <button 
+
+                          <button
                             type="button"
-                            onMouseEnter={() => setHoveredButton('co-op')}
-                            onMouseLeave={() => setHoveredButton(null)}
                             onClick={() => handleMultiplayerClick('co-op')}
-                            style={getButtonStyle('co-op')}
+                            className={cn(
+                              "relative flex flex-col items-center justify-center gap-1 rounded-xl border-2 p-2 md:p-3 transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]",
+                              multiplayerMode === 'co-op'
+                                ? "border-emerald-500 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 shadow-sm"
+                                : "border-muted bg-background/50 text-muted-foreground hover:border-emerald-500/50 hover:text-emerald-600/80"
+                            )}
                           >
-                            <Handshake className="mr-2 h-5 w-5" />Co-op
+                            <Handshake className={cn("h-5 w-5 md:h-6 md:w-6", multiplayerMode === 'co-op' ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground")} />
+                            <span className="text-sm md:text-base font-bold font-moms">Co-op</span>
+                            <span className="text-[0.6rem] uppercase tracking-wider opacity-70 font-moms">Team Up</span>
                           </button>
                         </div>
                         <FormMessage />
@@ -425,21 +515,28 @@ export function SettingsModal({ isOpen, gameType, onClose }: SettingsModalProps)
                   )}
                 </form>
               </Form>
-              <DialogFooter className="p-6 pt-4">
-                <Button
-                  type="submit"
-                  form="settings-form"
-                  size="lg"
-                  className="w-full h-14 text-xl"
-                  disabled={isSubmitting || !isAuthReady}
-                >
-                  {!isAuthReady ? 'Connecting…' : isSubmitting ? 'Starting...' : 'Start Game'}
-                </Button>
-              </DialogFooter>
-            </motion.div>
-          </DialogContent>
-        )}
-      </AnimatePresence>
-    </Dialog>
+            </div>
+
+            <DialogFooter className="p-3 md:p-4 pt-2 shrink-0">
+              <Button
+                type="submit"
+                form="settings-form"
+                size="lg"
+                className={cn(
+                  "w-full h-10 md:h-12 text-base md:text-lg font-bold font-moms uppercase tracking-widest shadow-lg transition-all hover:scale-[1.02] active:scale-[0.98]",
+                  gameType === 'solo'
+                    ? "bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white"
+                    : "bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white"
+                )}
+                disabled={isSubmitting || !isAuthReady}
+              >
+                {!isAuthReady ? 'Connecting…' : isSubmitting ? 'Starting...' : inviteFriendId ? 'Start Game and Invite' : 'Start Game'}
+              </Button>
+            </DialogFooter>
+          </DialogContent >
+        )
+        }
+      </AnimatePresence >
+    </Dialog >
   );
 }
