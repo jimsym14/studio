@@ -326,7 +326,7 @@ export default function Home() {
                   <span className="sr-only">Open friends</span>
                   {(pendingRequestCount > 0 || unreadChatCount > 0) && (
                     <span
-                      className="absolute -right-1 -top-1 flex h-5 min-w-[1.3rem] items-center justify-center rounded-full bg-destructive px-1 text-[0.65rem] font-semibold text-destructive-foreground"
+                      className="absolute -right-1 -top-1 flex h-5 min-w-[1.3rem] items-center justify-center rounded-full bg-destructive px-1 text-[0.65rem] font-semibold text-destructive-foreground animate-shake-periodic"
                     >
                       {pendingRequestCount + unreadChatCount > 99 ? '99+' : pendingRequestCount + unreadChatCount}
                     </span>

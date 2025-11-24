@@ -48,6 +48,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
 import { useToast } from '@/hooks/use-toast';
+import { useIsMobile } from '@/hooks/use-mobile';
 import { socialGet, socialPost, SocialClientError } from '@/lib/social-client';
 import { createGame } from '@/lib/actions/game';
 import { rememberLobbyPasscode } from '@/lib/lobby-passcode';
@@ -254,7 +255,33 @@ const EmptyState = ({
     </div>
     {action}
   </div>
+
 );
+
+// ========================================
+// COMPONENT: Marquee
+// ========================================
+const Marquee = ({ text, className, limit = 13 }: { text: string; className?: string; limit?: number }) => {
+  // Heuristic: if text is longer than limit, animate it
+  const isLong = text.length > limit;
+
+  if (!isLong) {
+    return <p className={cn("truncate", className)}>{text}</p>;
+  }
+
+  const animationClass = limit === 20 ? 'animate-marquee-20' : limit === 15 ? 'animate-marquee-15' : 'animate-marquee-13';
+
+  return (
+    <div
+      className={cn("relative overflow-hidden whitespace-nowrap min-w-0 max-w-full", className)}
+      style={{ width: `${limit}ch` }}
+    >
+      <div className={cn("inline-block hover:pause", animationClass)}>
+        {text}
+      </div>
+    </div>
+  );
+};
 
 // ========================================
 // COMPONENT: FriendsModal (Main Component)
@@ -273,6 +300,7 @@ export function FriendsModal({
   const { user, profile, db, rtdb } = useFirebase();
   const { socket } = useRealtime();
   const router = useRouter();
+  const isMobile = useIsMobile();
   const [activeTab, setActiveTab] = useState<TabKey>('friends');
   const [requestsSubTab, setRequestsSubTab] = useState<'incoming' | 'outgoing'>('incoming');
   const [friendsState, setFriendsState] = useState<FriendsState>(initialFriendsState);
@@ -855,9 +883,10 @@ export function FriendsModal({
         animate={{ opacity: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.95 }}
         key={friend.friendshipId}
-        className="group relative flex items-center justify-between rounded-xl border border-white/5 bg-white/5 p-2 md:p-3 transition-colors hover:bg-white/10"
+        key={friend.friendshipId}
+        className="group relative flex items-center justify-between rounded-xl border border-white/5 bg-white/5 p-1.5 md:p-2 transition-colors hover:bg-white/10"
       >
-        <div className="flex items-center gap-2 md:gap-3">
+        <div className="flex items-center gap-1.5 md:gap-2">
           <div className="relative">
             <Avatar className="h-8 w-8 md:h-10 md:w-10 border border-white/10 shadow-inner">
               <AvatarImage src={friend.photoURL ?? undefined} />
@@ -872,7 +901,7 @@ export function FriendsModal({
             />
           </div>
           <div className="min-w-0 flex-1">
-            <p className="truncate text-[10px] md:text-xs font-comic tracking-wide leading-tight text-white drop-shadow-sm">{usernameLabel}</p>
+            <Marquee text={usernameLabel} limit={13} className="text-[10px] md:text-xs font-comic tracking-wide leading-tight text-white drop-shadow-sm" />
             <p className={cn('text-[8px] md:text-[10px] font-bold font-moms tracking-wider uppercase', STATUS_TONE_CLASS[status.tone])}>{status.text}</p>
           </div>
         </div>
@@ -915,7 +944,7 @@ export function FriendsModal({
               Chat
             </Button>
             {isUnread && (
-              <span className="absolute -top-1 -right-1 flex h-3 w-3 md:h-4 md:w-4 items-center justify-center rounded-full bg-rose-500 text-[8px] md:text-[10px] font-bold text-white ring-2 ring-background">
+              <span className="absolute -top-1.5 -right-1.5 flex h-2.5 w-2.5 md:h-3.5 md:w-3.5 items-center justify-center rounded-full bg-rose-500 text-[7px] md:text-[9px] font-bold text-white ring-2 ring-background animate-shake-periodic">
                 !
               </span>
             )}
@@ -978,11 +1007,12 @@ export function FriendsModal({
             >
               <div>
                 <div className="flex items-start justify-between gap-2 md:gap-3">
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-base md:text-lg font-comic tracking-wide text-white" title={label}>{label}</p>
-                    <p className="truncate text-[10px] md:text-xs text-white/60 font-moms">
-                      {direction === 'incoming' ? 'Sent by' : 'Sent to'} {request.otherUser?.username ?? formatPlayerLabel(counterpartId)}
-                    </p>
+                  <div className="min-w-0 flex-1 overflow-hidden">
+                    <Marquee
+                      text={`${direction === 'incoming' ? 'Sent by' : 'Sent to'} ${request.otherUser?.username ?? formatPlayerLabel(counterpartId)}`}
+                      limit={isMobile ? 15 : 20}
+                      className="text-base md:text-lg font-comic tracking-wide text-white"
+                    />
                   </div>
                   <Badge variant={badgeVariant} className={cn("ml-1 md:ml-2 shrink-0 capitalize font-bold font-moms text-[9px] md:text-[10px]", request.status === 'accepted' && 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30')}>{request.status}</Badge>
                 </div>
@@ -1041,15 +1071,16 @@ export function FriendsModal({
                   </Button>
                 )}
                 {!isPending && (
-                  <p className="w-full text-center text-[10px] md:text-xs font-medium text-muted-foreground">
+                  <p className="w-full text-left text-[10px] md:text-xs font-medium text-muted-foreground">
                     {request.status === 'accepted' ? 'Friend added' : 'Request resolved'} • {formatRelativeTime(request.updatedAt ?? request.createdAt)}
                   </p>
                 )}
               </div>
             </motion.div>
           );
-        })}
-      </motion.div>
+        })
+        }
+      </motion.div >
     );
   };
 
@@ -1148,7 +1179,7 @@ export function FriendsModal({
                       <UserPlus className="h-3 w-3" />
                       <span>Requests</span>
                       {pendingIncomingCount > 0 && (
-                        <Badge variant="destructive" className="ml-1 h-3.5 md:h-4 px-1 text-[8px]">
+                        <Badge variant="destructive" className="ml-1 h-3 md:h-3.5 px-1 text-[7px] animate-shake-periodic">
                           {pendingIncomingCount}
                         </Badge>
                       )}
@@ -1170,14 +1201,14 @@ export function FriendsModal({
                           <div className="rounded-3xl border border-white/20 dark:border-white/10 bg-white/20 dark:bg-black/20 backdrop-blur-md p-3">
                             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                               <div>
-                                <p className="text-base font-bold">Your roster</p>
+                                <p className="text-base font-bold font-moms tracking-wide">Your roster</p>
                               </div>
                               <div className="flex items-center gap-2">
                                 <Input
                                   value={friendSearchTerm}
                                   onChange={(event) => setFriendSearchTerm(event.target.value)}
                                   placeholder="Search friends"
-                                  className="w-32 sm:w-48"
+                                  className="w-28 sm:w-36 h-7 text-xs bg-white/10 border-white/10 backdrop-blur-md placeholder:text-[10px] md:placeholder:text-xs placeholder:text-white/40 focus:bg-white/20 transition-all"
                                 />
                                 <Button
                                   variant="ghost"
@@ -1197,7 +1228,7 @@ export function FriendsModal({
                               </div>
                             ) : filteredFriends.length ? (
                               <ScrollArea className="max-h-[240px] pr-4">
-                                <div className="space-y-2">
+                                <div className="space-y-1">
                                   {filteredFriends.map((friend) => renderFriendRow(friend))}
                                 </div>
                               </ScrollArea>
@@ -1229,7 +1260,7 @@ export function FriendsModal({
                           <div className="space-y-4 rounded-3xl border border-white/20 dark:border-white/10 bg-white/20 dark:bg-black/20 backdrop-blur-md p-3">
                             <div className="flex flex-wrap items-center justify-between gap-3">
                               <div>
-                                <p className="text-base font-bold">Requests overview</p>
+                                <p className="text-base font-bold font-moms tracking-wide">Requests overview</p>
                                 <p className="text-sm text-muted-foreground">Handle invites you&apos;ve received or sent.</p>
                               </div>
                               <Button

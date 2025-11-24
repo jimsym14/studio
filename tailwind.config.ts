@@ -1,4 +1,4 @@
-import type {Config} from 'tailwindcss';
+import type { Config } from 'tailwindcss';
 
 export default {
   darkMode: ['class'],
@@ -96,11 +96,37 @@ export default {
           '50%': { transform: 'translateY(-40px) translateX(20px) rotate(6deg)' },
           '100%': { transform: 'translateY(0px) translateX(0px) rotate(0deg)' },
         },
+        'marquee-13': {
+          '0%': { transform: 'translateX(0%)' },
+          '100%': { transform: 'translateX(calc(-100% + 13ch))' },
+        },
+        'marquee-15': {
+          '0%': { transform: 'translateX(0%)' },
+          '100%': { transform: 'translateX(calc(-100% + 15ch))' },
+        },
+        'marquee-20': {
+          '0%': { transform: 'translateX(0%)' },
+          '100%': { transform: 'translateX(calc(-100% + 20ch))' },
+        },
+        'shake-periodic': {
+          '0%, 50%': { transform: 'rotate(0deg) scale(1)' },
+          '55%': { transform: 'rotate(-10deg) scale(1.2)' },
+          '60%': { transform: 'rotate(10deg) scale(1.2)' },
+          '65%': { transform: 'rotate(-10deg) scale(1.2)' },
+          '70%': { transform: 'rotate(10deg) scale(1.2)' },
+          '75%': { transform: 'rotate(-5deg) scale(1.2)' },
+          '80%': { transform: 'rotate(5deg) scale(1.2)' },
+          '85%, 100%': { transform: 'rotate(0deg) scale(1)' },
+        },
       },
       animation: {
         'accordion-down': 'accordion-down 0.2s ease-out',
         'accordion-up': 'accordion-up 0.2s ease-out',
         float: 'float 15s ease-in-out infinite',
+        'marquee-13': 'marquee-13 5s ease-in-out infinite alternate',
+        'marquee-15': 'marquee-15 5s ease-in-out infinite alternate',
+        'marquee-20': 'marquee-20 5s ease-in-out infinite alternate',
+        'shake-periodic': 'shake-periodic 3s ease-in-out infinite',
       },
     },
   },
