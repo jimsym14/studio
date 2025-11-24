@@ -448,8 +448,8 @@ export function SettingsModal({ isOpen, gameType, onClose, inviteFriendId, invit
                               >
                                 {[
                                   { val: 'unlimited', label: '∞', sub: 'No Limit' },
-                                  { val: '30', label: '30s', sub: 'Seconds' },
-                                  { val: '60', label: '60s', sub: 'Seconds' }
+                                  { val: '30', label: '30', sub: 'Seconds' },
+                                  { val: '60', label: '60', sub: 'Seconds' }
                                 ].map((opt) => (
                                   <FormItem key={opt.val} className="space-y-0">
                                     <FormControl>
@@ -491,7 +491,6 @@ export function SettingsModal({ isOpen, gameType, onClose, inviteFriendId, invit
                           >
                             <Swords className={cn("h-5 w-5 md:h-6 md:w-6", multiplayerMode === 'pvp' ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground")} />
                             <span className="text-sm md:text-base font-bold font-moms">PvP</span>
-                            <span className="text-[0.6rem] uppercase tracking-wider opacity-70 font-moms">Versus</span>
                           </button>
 
                           <button
@@ -506,7 +505,6 @@ export function SettingsModal({ isOpen, gameType, onClose, inviteFriendId, invit
                           >
                             <Handshake className={cn("h-5 w-5 md:h-6 md:w-6", multiplayerMode === 'co-op' ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground")} />
                             <span className="text-sm md:text-base font-bold font-moms">Co-op</span>
-                            <span className="text-[0.6rem] uppercase tracking-wider opacity-70 font-moms">Team Up</span>
                           </button>
                         </div>
                         <FormMessage />
