@@ -1362,7 +1362,7 @@ export default function GamePage() {
   };
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-[hsl(var(--panel-neutral))] text-foreground dark:bg-background">
+    <div className="relative min-h-screen overflow-hidden bg-[hsl(var(--panel-neutral))] text-foreground dark:bg-background animate-theme">
       <GraffitiBackground zIndex={0} />
       <div className="pointer-events-none absolute inset-0 z-[1]">
         <div
@@ -1770,7 +1770,7 @@ export default function GamePage() {
                 </div>
               </div>
             )}
-            <div className="relative z-[1] flex flex-col items-center text-center">
+            <div className="relative flex min-h-screen w-full flex-col items-center overflow-hidden animate-theme">
               <h3
                 className={cn(
                   'mt-2 text-4xl font-black leading-tight tracking-tight sm:text-5xl',

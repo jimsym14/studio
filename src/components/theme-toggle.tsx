@@ -16,20 +16,33 @@ export function ThemeToggle({ className, onClick, ...props }: ThemeToggleProps) 
   const { setTheme, resolvedTheme, theme } = useTheme();
   const { profile, savePreferences } = useFirebase();
   const isClient = typeof window !== 'undefined';
+  const lastToggleTimeRef = React.useRef(0);
 
   React.useEffect(() => {
     const preference = profile?.preferences?.theme;
     if (!preference) return;
+
+    // Skip sync if we just toggled manually (within 2 seconds)
+    // This prevents the "flash" where the profile update triggers a re-set of the theme
+    if (Date.now() - lastToggleTimeRef.current < 2000) return;
+
+    // If the preference matches the current theme (or resolved theme), do nothing.
+    // This prevents unnecessary calls to setTheme which might cause re-renders or flashes.
+    if (preference === theme || preference === resolvedTheme) return;
+
     if (preference !== theme) {
       setTheme(preference);
     }
-  }, [profile?.preferences?.theme, setTheme, theme]);
+  }, [profile?.preferences?.theme, setTheme, theme, resolvedTheme]);
 
   const handleToggle = (event: React.MouseEvent<HTMLButtonElement>) => {
     onClick?.(event);
     if (event.defaultPrevented) return;
+
     const nextTheme = (resolvedTheme ?? theme) === 'dark' ? 'light' : 'dark';
+    lastToggleTimeRef.current = Date.now();
     setTheme(nextTheme);
+
     if (profile) {
       if (isGuestProfile(profile)) {
         updateGuestSessionTheme(nextTheme as UserThemePreference);

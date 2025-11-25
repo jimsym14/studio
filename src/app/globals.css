@@ -448,6 +448,10 @@
     display: none;
     /* Chrome, Safari and Opera */
   }
+
+  .animate-theme {
+    @apply transition-colors duration-100 ease-in-out;
+  }
 }
 
 @keyframes float {

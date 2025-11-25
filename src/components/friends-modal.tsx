@@ -50,6 +50,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTr
 import { useToast } from '@/hooks/use-toast';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { socialGet, socialPost, SocialClientError } from '@/lib/social-client';
+import { NOTIFICATIONS_COLLECTION } from '@/lib/social/constants';
 import { createGame } from '@/lib/actions/game';
 import { rememberLobbyPasscode } from '@/lib/lobby-passcode';
 import { cn } from '@/lib/utils';
@@ -173,10 +174,11 @@ const deriveFriendStatus = (friend: FriendSummary): FriendStatusDescriptor => {
 };
 
 // Determine primary action for a friend (invite, join, or spectate)
-const determineFriendAction = (friend: FriendSummary): FriendActionDescriptor => {
+// Determine primary action for a friend (invite, join, or spectate)
+const determineFriendAction = (friend: FriendSummary, invitePasscode?: string): FriendActionDescriptor => {
   const activity = friend.activity;
   if (activity?.kind === 'waiting') {
-    return { kind: 'join', lobbyId: activity.lobbyId ?? null, mode: activity.mode, passcode: activity.passcode };
+    return { kind: 'join', lobbyId: activity.lobbyId ?? null, mode: activity.mode, passcode: activity.passcode ?? invitePasscode };
   }
   if (activity?.kind === 'playing') {
     return { kind: 'spectate', gameId: activity.gameId ?? null, mode: activity.mode };
@@ -305,6 +307,7 @@ export function FriendsModal({
   const [requestsSubTab, setRequestsSubTab] = useState<'incoming' | 'outgoing'>('incoming');
   const [friendsState, setFriendsState] = useState<FriendsState>(initialFriendsState);
   const [requestsState, setRequestsState] = useState<RequestsState>(initialRequestsState);
+  const [gameInvites, setGameInvites] = useState<Record<string, string>>({});
   const [requestActionId, setRequestActionId] = useState<string | null>(null);
   const [friendActionState, setFriendActionState] = useState<string | null>(null);
   const [friendSearchTerm, setFriendSearchTerm] = useState('');
@@ -336,7 +339,21 @@ export function FriendsModal({
     setFriendsState((prev) => ({ ...prev, loading: true, error: null }));
     try {
       const response = await socialGet<{ friends: FriendSummary[] }>('/api/friends');
-      setFriendsState({ records: response.friends ?? [], loading: false, error: null });
+
+      setFriendsState((prev) => {
+        const newRecords = response.friends ?? [];
+        // Preserve existing activity state to avoid flickering or resetting to 'online' (via fallback)
+        // when the list reloads but the presence listeners haven't re-fired.
+        const mergedRecords = newRecords.map((newFriend) => {
+          const existing = prev.records.find((r) => r.friendshipId === newFriend.friendshipId);
+          if (existing?.activity) {
+            return { ...newFriend, activity: existing.activity };
+          }
+          return newFriend;
+        });
+
+        return { records: mergedRecords, loading: false, error: null };
+      });
     } catch (error) {
       const message = error instanceof SocialClientError ? error.message : 'Unable to load friends';
       setFriendsState((prev) => ({ ...prev, loading: false, error: message }));
@@ -451,23 +468,37 @@ export function FriendsModal({
             }
           } else {
             // No active games - check if user is offline or just online without a game
-            const lastInteractionMs = friend.lastInteractionAt
-              ? new Date(friend.lastInteractionAt).getTime()
-              : null;
+            // CRITICAL FIX: Do NOT blindly set to 'online' here.
+            // If we blindly set to 'online', we overwrite the RTDB presence listener which might know they are offline.
+            // We only want to "reset" them to online if they were previously known to be in a game.
 
-            // Only mark as offline if they haven't been active in over an hour
-            if (lastInteractionMs && Date.now() - lastInteractionMs > 60 * 60 * 1000) {
-              newActivity = {
-                kind: 'offline',
-                lastInteractionAt: friend.lastInteractionAt,
-              };
-            } else {
-              // Otherwise assume they're active (just not in a game)
-              newActivity = { kind: 'online' };
-            }
+            setFriendsState((prev) => {
+              const currentFriendRecord = prev.records.find(f => f.friendshipId === friend.friendshipId);
+              const currentActivity = currentFriendRecord?.activity;
+
+              // If they were playing or waiting, and now they are not, we can safely say they are just "online" (or let RTDB handle it).
+              // To be safe and avoid "stuck" states, we can set them to 'online' here, and let the RTDB listener (which runs in parallel)
+              // eventually correct it to 'offline' if they are truly gone. 
+              // BUT, if they are already 'offline' in our state (from RTDB), we should NOT flip them back to 'online'.
+
+              if (currentActivity?.kind === 'waiting' || currentActivity?.kind === 'playing') {
+                return {
+                  ...prev,
+                  records: prev.records.map((f) =>
+                    f.friendshipId === friend.friendshipId
+                      ? { ...f, activity: { kind: 'online' } }
+                      : f
+                  ),
+                };
+              }
+
+              // If they are currently 'online' or 'offline', do nothing. Let RTDB handle it.
+              return prev;
+            });
+            return;
           }
 
-          // Update the friend's activity in state
+          // Update the friend's activity in state (only for active game states)
           setFriendsState((prev) => ({
             ...prev,
             records: prev.records.map((f) =>
@@ -518,6 +549,7 @@ export function FriendsModal({
 
             // If friend is offline according to presence
             if (!data?.online) {
+              console.log(`[Presence] ${friend.username} is OFFLINE (data: ${JSON.stringify(data)})`);
               return {
                 ...f,
                 activity: {
@@ -528,12 +560,15 @@ export function FriendsModal({
             }
 
             // Friend is online but not in a game
+            console.log(`[Presence] ${friend.username} is ONLINE`);
             return {
               ...f,
               activity: { kind: 'online' },
             };
           }),
         }));
+      }, (error) => {
+        console.error(`[Presence] Error for ${friend.username}:`, error);
       });
 
       unsubscribers.push(unsubscribe);
@@ -547,35 +582,38 @@ export function FriendsModal({
   }, [rtdb, canUseFriends, friendsState.records.map(f => f.friendshipId).join(',')]);
 
   // Listen for friend activity (presence)
+  // (Removed conflicting/empty Firestore presence listener)
+
+  // NEW: Listen for game invites to get passcodes
+  // Listen for game invites to get passcodes
   useEffect(() => {
     if (!user || !db) return;
 
-    let unsubscribe: () => void;
-
+    let unsubscribeInvites: () => void;
     try {
-      const q = query(
-        collection(db, 'users'),
-        where('lastSeen', '>', Timestamp.fromMillis(Date.now() - 5 * 60 * 1000))
+      const invitesQuery = query(
+        collection(db, NOTIFICATIONS_COLLECTION),
+        where('userId', '==', user.uid),
+        where('type', '==', 'game-invite'),
+        where('read', '==', false)
       );
 
-      unsubscribe = onSnapshot(q, (snapshot) => {
-        snapshot.docChanges().forEach((change) => {
-          if (change.type === 'modified' || change.type === 'added') {
-            // Handle presence updates
+      unsubscribeInvites = onSnapshot(invitesQuery, (snapshot) => {
+        const invites: Record<string, string> = {};
+        snapshot.forEach((doc) => {
+          const data = doc.data();
+          if (data.payload?.from && data.payload?.passcode) {
+            invites[data.payload.from] = data.payload.passcode;
           }
         });
-      }, (error) => {
-        // Suppress permission-denied errors which are expected before rules are updated
-        if (error.code !== 'permission-denied') {
-          console.error('Presence listener error:', error);
-        }
+        setGameInvites(invites);
       });
     } catch (err) {
-      console.warn('Failed to setup presence listener:', err);
+      console.warn('Failed to setup invites listener:', err);
     }
 
     return () => {
-      if (unsubscribe) unsubscribe();
+      if (unsubscribeInvites) unsubscribeInvites();
     };
   }, [user, db]);
 
@@ -839,7 +877,8 @@ export function FriendsModal({
       .slice(0, 2)
       .toUpperCase();
     const status = deriveFriendStatus(friend);
-    const action = determineFriendAction(friend);
+    const invitePasscode = gameInvites[friend.userId];
+    const action = determineFriendAction(friend, invitePasscode);
     const chatDisabled = !onOpenChat;
     const actionDisabled =
       (action.kind === 'join' && !action.lobbyId) ||
@@ -884,11 +923,11 @@ export function FriendsModal({
         exit={{ opacity: 0, scale: 0.95 }}
         key={friend.friendshipId}
         key={friend.friendshipId}
-        className="group relative flex items-center justify-between rounded-xl border border-white/5 bg-white/5 p-1.5 md:p-2 transition-colors hover:bg-white/10"
+        className="group relative flex items-center justify-between rounded-xl border border-black/5 dark:border-white/5 bg-black/5 dark:bg-white/5 p-1.5 md:p-2 transition-colors hover:bg-black/10 dark:hover:bg-white/10"
       >
         <div className="flex items-center gap-1.5 md:gap-2">
           <div className="relative">
-            <Avatar className="h-8 w-8 md:h-10 md:w-10 border border-white/10 shadow-inner">
+            <Avatar className="h-8 w-8 md:h-10 md:w-10 border border-black/10 dark:border-white/10 shadow-inner">
               <AvatarImage src={friend.photoURL ?? undefined} />
               <AvatarFallback className="text-[10px] md:text-sm">{friend.displayName?.slice(0, 2).toUpperCase() ?? '??'}</AvatarFallback>
             </Avatar>
@@ -901,7 +940,7 @@ export function FriendsModal({
             />
           </div>
           <div className="min-w-0 flex-1">
-            <Marquee text={usernameLabel} limit={13} className="text-[10px] md:text-xs font-comic tracking-wide leading-tight text-white drop-shadow-sm" />
+            <Marquee text={usernameLabel} limit={13} className="text-[10px] md:text-xs font-comic tracking-wide leading-tight text-foreground dark:text-white drop-shadow-sm" />
             <p className={cn('text-[8px] md:text-[10px] font-bold font-moms tracking-wider uppercase', STATUS_TONE_CLASS[status.tone])}>{status.text}</p>
           </div>
         </div>
@@ -938,7 +977,7 @@ export function FriendsModal({
               variant="secondary"
               onClick={() => setActiveFriendChat({ friendshipId: friend.friendshipId, userId: friend.userId, displayName: displayLabel })}
               aria-label="Open chat"
-              className="h-6 md:h-7 px-1.5 md:px-2 text-[9px] md:text-[10px] font-bold font-moms bg-white/10 hover:bg-white/20 text-white border border-white/5"
+              className="h-6 md:h-7 px-1.5 md:px-2 text-[9px] md:text-[10px] font-bold font-moms bg-black/5 dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/20 text-foreground dark:text-white border border-black/5 dark:border-white/5"
             >
               <MessageCircle className="mr-1 h-2.5 w-2.5 md:h-3 md:w-3" />
               Chat
@@ -1003,7 +1042,7 @@ export function FriendsModal({
               variants={itemVariants}
               layout
               key={request.id}
-              className="flex flex-col justify-between rounded-3xl border border-white/10 bg-black/20 p-3 md:p-5 shadow-lg backdrop-blur-md transition-all hover:border-amber-500/30 hover:bg-black/30 hover:shadow-xl"
+              className="flex flex-col justify-between rounded-3xl border border-black/10 dark:border-white/10 bg-white/60 dark:bg-black/20 p-3 md:p-5 shadow-lg backdrop-blur-md transition-all hover:border-amber-500/30 hover:bg-white/80 dark:hover:bg-black/30 hover:shadow-xl"
             >
               <div>
                 <div className="flex items-start justify-between gap-2 md:gap-3">
@@ -1011,12 +1050,12 @@ export function FriendsModal({
                     <Marquee
                       text={`${direction === 'incoming' ? 'Sent by' : 'Sent to'} ${request.otherUser?.username ?? formatPlayerLabel(counterpartId)}`}
                       limit={isMobile ? 15 : 20}
-                      className="text-base md:text-lg font-comic tracking-wide text-white"
+                      className="text-base md:text-lg font-comic tracking-wide text-foreground dark:text-white"
                     />
                   </div>
                   <Badge variant={badgeVariant} className={cn("ml-1 md:ml-2 shrink-0 capitalize font-bold font-moms text-[9px] md:text-[10px]", request.status === 'accepted' && 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30')}>{request.status}</Badge>
                 </div>
-                {request.message && <p className="mt-2 md:mt-3 rounded-xl bg-white/5 p-2 md:p-3 text-xs md:text-sm italic text-white/70">“{request.message}”</p>}
+                {request.message && <p className="mt-2 md:mt-3 rounded-xl bg-black/5 dark:bg-white/5 p-2 md:p-3 text-xs md:text-sm italic text-muted-foreground dark:text-white/70">“{request.message}”</p>}
               </div>
 
               <div className="mt-3 md:mt-4 flex items-center gap-2">
@@ -1097,7 +1136,7 @@ export function FriendsModal({
         "transition-all duration-300",
         activeFriendChat
           ? "max-w-[440px] w-full border-none bg-transparent p-0 shadow-none [&>button]:hidden"
-          : "w-[95vw] max-w-md max-h-[90vh] md:max-h-[95vh] overflow-hidden border border-white/20 dark:border-white/10 bg-white/30 dark:bg-black/30 backdrop-blur-2xl shadow-2xl rounded-3xl"
+          : "w-[95vw] max-w-md max-h-[90vh] md:max-h-[95vh] overflow-hidden border border-white/20 dark:border-white/10 bg-white/80 dark:bg-black/30 backdrop-blur-2xl shadow-2xl rounded-3xl"
       )}>
         <DialogDescription className="sr-only">
           Friends list and requests management interface
@@ -1148,7 +1187,7 @@ export function FriendsModal({
                 ======================================== */}
             {/* Dialog Header */}
             <DialogHeader className="mb-2">
-              <DialogTitle className="text-2xl font-comic tracking-wide text-white drop-shadow-md">Friends</DialogTitle>
+              <DialogTitle className="text-2xl font-comic tracking-wide text-foreground dark:text-white drop-shadow-md">Friends</DialogTitle>
             </DialogHeader>
             {!canUseFriends && (
               <div className="rounded-2xl border border-dashed border-blue-500/50 bg-blue-500/5 p-6 text-center">
@@ -1164,17 +1203,17 @@ export function FriendsModal({
               <div className="space-y-3">
                 <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as TabKey)}>
                   {/* Tab Triggers */}
-                  <TabsList className="flex w-full gap-1 rounded-full bg-white/30 dark:bg-black/30 backdrop-blur-sm p-1 border border-white/20 dark:border-white/10">
+                  <TabsList className="flex w-full gap-1 rounded-full bg-black/5 dark:bg-black/30 backdrop-blur-sm p-1 border border-black/5 dark:border-white/10">
                     <TabsTrigger
                       value="friends"
-                      className="flex-1 flex items-center justify-center gap-1 rounded-full border border-transparent px-2 py-1 text-[12px] md:text-[15px] font-bold font-moms uppercase tracking-wider transition-all data-[state=active]:bg-white/90 data-[state=active]:text-emerald-600 data-[state=active]:shadow-sm dark:data-[state=active]:bg-white/20 dark:data-[state=active]:text-emerald-400"
+                      className="flex-1 flex items-center justify-center gap-1 rounded-full border border-transparent px-2 py-1 text-[12px] md:text-[15px] font-bold font-moms uppercase tracking-wider transition-all data-[state=active]:bg-white data-[state=active]:text-emerald-600 data-[state=active]:shadow-sm dark:data-[state=active]:bg-white/20 dark:data-[state=active]:text-emerald-400"
                     >
                       <Users className="h-3 w-3" />
                       <span>Friends</span>
                     </TabsTrigger>
                     <TabsTrigger
                       value="requests"
-                      className="flex-1 flex items-center justify-center gap-1 rounded-full border border-transparent px-2 py-1 text-[12px] md:text-[15px] font-bold font-moms uppercase tracking-wider transition-all data-[state=active]:bg-white/90 data-[state=active]:text-amber-600 data-[state=active]:shadow-sm dark:data-[state=active]:bg-white/20 dark:data-[state=active]:text-amber-400"
+                      className="flex-1 flex items-center justify-center gap-1 rounded-full border border-transparent px-2 py-1 text-[12px] md:text-[15px] font-bold font-moms uppercase tracking-wider transition-all data-[state=active]:bg-white data-[state=active]:text-amber-600 data-[state=active]:shadow-sm dark:data-[state=active]:bg-white/20 dark:data-[state=active]:text-amber-400"
                     >
                       <UserPlus className="h-3 w-3" />
                       <span>Requests</span>
@@ -1198,7 +1237,7 @@ export function FriendsModal({
                           exit={{ opacity: 0, x: 20 }}
                           transition={{ duration: 0.2 }}
                         >
-                          <div className="rounded-3xl border border-white/20 dark:border-white/10 bg-white/20 dark:bg-black/20 backdrop-blur-md p-3">
+                          <div className="rounded-3xl border border-white/20 dark:border-white/10 bg-white/40 dark:bg-black/20 backdrop-blur-md p-3">
                             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                               <div>
                                 <p className="text-base font-bold font-moms tracking-wide">Your roster</p>
@@ -1208,7 +1247,7 @@ export function FriendsModal({
                                   value={friendSearchTerm}
                                   onChange={(event) => setFriendSearchTerm(event.target.value)}
                                   placeholder="Search friends"
-                                  className="w-28 sm:w-36 h-7 text-xs bg-white/10 border-white/10 backdrop-blur-md placeholder:text-[10px] md:placeholder:text-xs placeholder:text-white/40 focus:bg-white/20 transition-all"
+                                  className="w-28 sm:w-36 h-7 text-xs bg-black/5 dark:bg-white/10 border-black/5 dark:border-white/10 backdrop-blur-md placeholder:text-[10px] md:placeholder:text-xs placeholder:text-muted-foreground dark:placeholder:text-white/40 focus:bg-black/10 dark:focus:bg-white/20 transition-all"
                                 />
                                 <Button
                                   variant="ghost"
@@ -1257,7 +1296,7 @@ export function FriendsModal({
                           exit={{ opacity: 0, x: 20 }}
                           transition={{ duration: 0.2 }}
                         >
-                          <div className="space-y-4 rounded-3xl border border-white/20 dark:border-white/10 bg-white/20 dark:bg-black/20 backdrop-blur-md p-3">
+                          <div className="space-y-4 rounded-3xl border border-white/20 dark:border-white/10 bg-white/40 dark:bg-black/20 backdrop-blur-md p-3">
                             <div className="flex flex-wrap items-center justify-between gap-3">
                               <div>
                                 <p className="text-base font-bold font-moms tracking-wide">Requests overview</p>
@@ -1277,14 +1316,14 @@ export function FriendsModal({
 
                             <div className="flex flex-col gap-4">
                               {/* Sub-tabs for Incoming/Outgoing Requests */}
-                              <div className="flex p-1 bg-black/20 rounded-xl border border-white/5 backdrop-blur-sm">
+                              <div className="flex p-1 bg-black/5 dark:bg-black/20 rounded-xl border border-black/5 dark:border-white/5 backdrop-blur-sm">
                                 <button
                                   onClick={() => setRequestsSubTab('incoming')}
                                   className={cn(
                                     "flex-1 py-2 text-xs font-bold font-moms uppercase tracking-widest rounded-lg transition-all",
                                     requestsSubTab === 'incoming'
-                                      ? "bg-white/10 text-white shadow-sm"
-                                      : "text-white/40 hover:text-white/70 hover:bg-white/5"
+                                      ? "bg-white shadow-sm text-foreground"
+                                      : "text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5"
                                   )}
                                 >
                                   Incoming
@@ -1294,8 +1333,8 @@ export function FriendsModal({
                                   className={cn(
                                     "flex-1 py-2 text-xs font-bold font-moms uppercase tracking-widest rounded-lg transition-all",
                                     requestsSubTab === 'outgoing'
-                                      ? "bg-white/10 text-white shadow-sm"
-                                      : "text-white/40 hover:text-white/70 hover:bg-white/5"
+                                      ? "bg-white shadow-sm text-foreground"
+                                      : "text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5"
                                   )}
                                 >
                                   Outgoing
@@ -1303,13 +1342,13 @@ export function FriendsModal({
                               </div>
 
                               <div className="space-y-4">
-                                <div className="rounded-2xl bg-white/5 p-5 border border-white/5 backdrop-blur-sm">
+                                <div className="rounded-2xl bg-black/5 dark:bg-white/5 p-5 border border-black/5 dark:border-white/5 backdrop-blur-sm">
                                   <div className="mb-4 flex items-center justify-between">
                                     <div>
-                                      <h4 className="text-sm font-bold font-moms text-white/90">
+                                      <h4 className="text-sm font-bold font-moms text-foreground dark:text-white/90">
                                         {requestsSubTab === 'incoming' ? 'Incoming requests' : 'Outgoing requests'}
                                       </h4>
-                                      <p className="text-xs text-white/50 mt-1">
+                                      <p className="text-xs text-muted-foreground dark:text-white/50 mt-1">
                                         {requestsSubTab === 'incoming'
                                           ? 'Approve or decline invites from other players.'
                                           : "See invites you've sent or add someone new."}
@@ -1319,7 +1358,7 @@ export function FriendsModal({
                                       <Button
                                         size="sm"
                                         onClick={() => setInviteSheetOpen(true)}
-                                        className="h-8 bg-white/10 hover:bg-white/20 text-white font-bold font-moms border border-white/10"
+                                        className="h-8 bg-black/5 dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/20 text-foreground dark:text-white font-bold font-moms border border-black/5 dark:border-white/10"
                                       >
                                         <Plus className="mr-1.5 h-3.5 w-3.5" />
                                         New Invite
@@ -1338,23 +1377,23 @@ export function FriendsModal({
                             SHEET: Send Friend Request
                             ======================================== */}
                               <Sheet open={inviteSheetOpen} onOpenChange={setInviteSheetOpen}>
-                                <SheetContent side="bottom" className="rounded-t-[2rem] sm:max-w-md border-white/10 bg-black/90 backdrop-blur-xl text-white">
+                                <SheetContent side="bottom" className="rounded-t-[2rem] sm:max-w-md border-black/10 dark:border-white/10 bg-white/90 dark:bg-black/90 backdrop-blur-xl text-foreground dark:text-white">
                                   <SheetHeader className="mb-4 text-left">
-                                    <SheetTitle className="text-white font-comic tracking-wide text-xl">Send Friend Request</SheetTitle>
-                                    <SheetDescription className="text-white/60 font-moms">
+                                    <SheetTitle className="text-foreground dark:text-white font-comic tracking-wide text-xl">Send Friend Request</SheetTitle>
+                                    <SheetDescription className="text-muted-foreground dark:text-white/60 font-moms">
                                       Enter a username to send an invite.
                                     </SheetDescription>
                                   </SheetHeader>
                                   <div className="space-y-4">
                                     <div className="space-y-2">
-                                      <Label htmlFor="username" className="text-white font-bold font-moms">Username</Label>
+                                      <Label htmlFor="username" className="text-foreground dark:text-white font-bold font-moms">Username</Label>
                                       <div className="flex gap-2">
                                         <div className="relative flex-1">
-                                          <span className="absolute left-3 top-2.5 text-white/40 font-moms">@</span>
+                                          <span className="absolute left-3 top-2.5 text-muted-foreground dark:text-white/40 font-moms">@</span>
                                           <Input
                                             id="username"
                                             placeholder="username"
-                                            className="pl-7 bg-white/10 border-white/10 text-white placeholder:text-white/20 font-moms"
+                                            className="pl-7 bg-black/5 dark:bg-white/10 border-black/10 dark:border-white/10 text-foreground dark:text-white placeholder:text-muted-foreground dark:placeholder:text-white/20 font-moms"
                                             value={inviteUsername}
                                             onChange={(e) => setInviteUsername(e.target.value)}
                                             onKeyDown={(e) => {
@@ -1368,16 +1407,16 @@ export function FriendsModal({
                                       {inviteError && <p className="text-sm text-red-400 font-moms">{inviteError}</p>}
                                     </div>
                                     <div className="space-y-2">
-                                      <Label htmlFor="message" className="text-white font-bold font-moms">Message (optional)</Label>
+                                      <Label htmlFor="message" className="text-foreground dark:text-white font-bold font-moms">Message (optional)</Label>
                                       <Textarea
                                         id="message"
                                         placeholder="Say hello..."
-                                        className="resize-none bg-white/10 border-white/10 text-white placeholder:text-white/20 font-moms"
+                                        className="resize-none bg-black/5 dark:bg-white/10 border-black/10 dark:border-white/10 text-foreground dark:text-white placeholder:text-muted-foreground dark:placeholder:text-white/20 font-moms"
                                         maxLength={100}
                                         value={outgoingMessage}
                                         onChange={(e) => setOutgoingMessage(e.target.value)}
                                       />
-                                      <p className="text-xs text-white/40 text-right font-moms">
+                                      <p className="text-xs text-muted-foreground dark:text-white/40 text-right font-moms">
                                         {outgoingMessage.length}/100
                                       </p>
                                     </div>

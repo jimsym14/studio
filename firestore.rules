@@ -55,5 +55,10 @@ service cloud.firestore {
       allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
       allow write: if false; // Managed by server
     }
+
+    // --- Session Locks (for online players count) ---
+    match /sessionLocks/{lockId} {
+      allow read, write: if isAuthenticated();
+    }
   }
 }
