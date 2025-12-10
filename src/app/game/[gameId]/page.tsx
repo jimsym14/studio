@@ -2,6 +2,7 @@
 
 import { arrayRemove, arrayUnion, doc, onSnapshot, runTransaction, updateDoc, type DocumentData, type DocumentSnapshot } from 'firebase/firestore';
 import {
+  AlertTriangle,
   Clock3,
   Copy,
   CornerDownLeft,
@@ -10,6 +11,7 @@ import {
   DoorOpen,
   Handshake,
   Home,
+  Lock,
   RefreshCcw,
   RotateCcw,
   Swords,
@@ -20,6 +22,7 @@ import type { LucideIcon } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useTheme } from 'next-themes';
 import { useParams, useRouter } from 'next/navigation';
+import { motion, AnimatePresence } from 'framer-motion';
 
 import { Button } from '@/components/ui/button';
 import { useFirebase } from '@/components/firebase-provider';
@@ -27,7 +30,7 @@ import { ThemeToggle } from '@/components/theme-toggle';
 import { GraffitiBackground } from '@/components/graffiti-background';
 import { usePlayerNames } from '@/hooks/use-player-names';
 import { useToast } from '@/hooks/use-toast';
-import { createGame } from '@/lib/actions/game';
+import { createGame, advanceGameRound } from '@/lib/actions/game';
 import type { GameDocument } from '@/types/game';
 import type { GuessResult, GuessScore } from '@/lib/wordle';
 import { getKeyboardHints, scoreGuess } from '@/lib/wordle';
@@ -37,6 +40,8 @@ import { isGuestProfile } from '@/types/user';
 import type { ChatAvailability, ChatContextDescriptor } from '@/types/social';
 import { runWithFirestoreRetry } from '@/lib/firestore-retry';
 import { useGamePresence } from '@/hooks/use-game-presence';
+import { useGameTyping } from '@/hooks/use-game-typing';
+import { Keyboard } from '@/components/keyboard';
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -47,7 +52,7 @@ const firebaseConfig = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
 };
 
-const keyboardRows = ['qwertyuiop', 'asdfghjkl', 'zxcvbnm'];
+
 const MATCH_HARD_STOP_MINUTES = 30;
 const REJOIN_MINUTES = 2;
 const DISCONNECT_DRAW_MS = 60_000;
@@ -136,12 +141,6 @@ const tileTone: Record<GuessScore, string> = {
   absent: 'bg-muted text-muted-foreground',
 };
 
-const keyboardTone: Record<GuessScore, string> = {
-  correct: 'bg-[hsla(var(--accent)/0.95)] text-[hsl(var(--accent-foreground))] border-[hsla(var(--accent)/0.45)] shadow-[0_10px_26px_rgba(0,0,0,0.15)]',
-  present: 'bg-[hsla(var(--primary)/0.9)] text-[hsl(var(--primary-foreground))] border-[hsla(var(--primary)/0.5)] shadow-[0_10px_26px_rgba(0,0,0,0.15)]',
-  absent: 'bg-muted text-muted-foreground border-transparent',
-};
-
 const SOLO_LOSS_MESSAGES = [
   'The word slipped through your fingers this time.',
   'Mystery letters stayed hidden—shake it off and try again.',
@@ -198,6 +197,8 @@ export default function GamePage() {
   const [isLocalhost, setIsLocalhost] = useState(false);
   const [disconnectCountdown, setDisconnectCountdown] = useState<number | null>(null);
   const [missingPlayerNames, setMissingPlayerNames] = useState<string[]>([]);
+  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+  const [lockedIndices, setLockedIndices] = useState<Set<number>>(new Set());
   const autoLossTriggeredRef = useRef(false);
   const previousGuessCountRef = useRef(0);
   const initialLoadRef = useRef(true);
@@ -250,6 +251,7 @@ export default function GamePage() {
 
   const gameId = params?.gameId ? String(params.gameId) : '';
   const { activePlayers: realtimePlayers, loading: presenceLoading } = useGamePresence(gameId);
+  const { broadcastTyping, clearTyping, peerTyping } = useGameTyping(gameId);
   const guest = profile ? isGuestProfile(profile) : false;
   const chatAvailability: ChatAvailability = user && !guest ? 'persistent' : 'guest-blocked';
   const isPlayer = Boolean(userId && game?.players?.includes(userId));
@@ -269,6 +271,7 @@ export default function GamePage() {
   const activeTurnPlayerId = isMultiplayerGame ? game?.currentTurnPlayerId ?? null : null;
   const hasLockedTurn = Boolean(isMultiplayerGame && activeTurnPlayerId);
   const isMyTurn = !isMultiplayerGame || !hasLockedTurn || activeTurnPlayerId === userId;
+  const isMultiRoundPvP = Boolean(isMultiplayerGame && game?.multiplayerMode === 'pvp' && (game?.matchState?.maxWins ?? 1) > 1);
   const canInteract = Boolean(isPlayer && game?.status === 'in_progress' && isMyTurn);
   const isCoopMode = game?.multiplayerMode === 'co-op';
   const spectatorIds = useMemo(() => {
@@ -415,6 +418,33 @@ export default function GamePage() {
     if (!game) return;
     setCurrentGuess((prev) => prev.slice(0, game.wordLength));
   }, [game]);
+
+  useEffect(() => {
+    if (!game?.matchState?.roundBonus || !userId) {
+      setLockedIndices(new Set());
+      return;
+    }
+    if (game.matchState.roundBonus.beneficiaryId === userId) {
+      const { revealedLetterIndex, revealedLetter } = game.matchState.roundBonus;
+      setLockedIndices(prev => {
+        if (prev.has(revealedLetterIndex)) return prev;
+        const next = new Set(prev);
+        next.add(revealedLetterIndex);
+        return next;
+      });
+      // Also ensure current guess has the letter
+      setCurrentGuess(prev => {
+        const chars = prev.split('');
+        // Fill up to index if needed
+        while (chars.length <= revealedLetterIndex) chars.push(' ');
+        if (chars[revealedLetterIndex] !== revealedLetter) {
+          chars[revealedLetterIndex] = revealedLetter;
+          return chars.join('').slice(0, game.wordLength);
+        }
+        return prev;
+      });
+    }
+  }, [game?.matchState?.roundBonus, userId, game?.wordLength]);
 
   useEffect(() => {
     if (!isPlayer) return;
@@ -748,28 +778,7 @@ export default function GamePage() {
     toast,
   ]);
 
-  useEffect(() => {
-    if (!db || !game || game.status !== 'in_progress') return;
-    const votesNeeded = Math.max(game.players.length, 1);
-    if ((game.endVotes ?? []).length < votesNeeded) return;
-
-    const finalize = async () => {
-      try {
-        const gameRef = doc(db, 'games', gameId);
-        await updateDoc(gameRef, {
-          status: 'completed',
-          completionMessage: 'Match ended by player vote.',
-          completedAt: new Date().toISOString(),
-          endedBy: null,
-        });
-      } catch (error) {
-        console.error('Failed to close game after votes', error);
-      }
-    };
-
-    void finalize();
-  }, [db, game, gameId]);
-
+  /* Word Logic & Submission */
   const validateWord = useCallback(
     async (word: string) => {
       try {
@@ -788,25 +797,6 @@ export default function GamePage() {
     [game?.wordLength]
   );
 
-  const addLetter = useCallback(
-    (letter: string) => {
-      if (!game || !isPlayer || !isMyTurn || game.status !== 'in_progress') return;
-      if (currentGuess.length >= game.wordLength) return;
-      const normalized = letter.toLowerCase();
-      const nextGuess = (currentGuess + normalized).slice(0, game.wordLength);
-      const pulseId = Date.now();
-      setKeyPulse({ letter: normalized, id: pulseId });
-      setTilePulse({ index: currentGuess.length, id: pulseId });
-      setCurrentGuess(nextGuess);
-    },
-    [currentGuess, game, isMyTurn, isPlayer]
-  );
-
-  const removeLetter = useCallback(() => {
-    if (!canInteract) return;
-    setCurrentGuess((prev) => prev.slice(0, -1));
-  }, [canInteract]);
-
   const buildLossMessage = useCallback(
     (reason: string) => {
       if (!game) return reason;
@@ -818,41 +808,6 @@ export default function GamePage() {
     [game]
   );
 
-  useEffect(() => {
-    if (!db || !game || game.status !== 'in_progress' || autoLossTriggeredRef.current) return;
-
-    const matchDeadlineMs = game.matchDeadline ? new Date(game.matchDeadline).getTime() : null;
-    const turnDeadlineMs = game.turnDeadline ? new Date(game.turnDeadline).getTime() : null;
-    const matchExpired = typeof matchDeadlineMs === 'number' && now >= matchDeadlineMs;
-    const turnExpired = typeof turnDeadlineMs === 'number' && now >= turnDeadlineMs;
-
-    if (!matchExpired && !turnExpired) return;
-
-    autoLossTriggeredRef.current = true;
-    const reason = matchExpired ? 'Match timer expired.' : 'Turn timer expired.';
-    const completionMessage = buildLossMessage(reason);
-
-    const finalize = async () => {
-      try {
-        const gameRef = doc(db, 'games', gameId);
-        await updateDoc(gameRef, {
-          status: 'completed',
-          completedAt: new Date().toISOString(),
-          winnerId: null,
-          completionMessage,
-          endedBy: null,
-          matchDeadline: null,
-          turnDeadline: null,
-        });
-      } catch (error) {
-        console.error('Failed to auto-complete game on timer expiry', error);
-        autoLossTriggeredRef.current = false;
-      }
-    };
-
-    void finalize();
-  }, [buildLossMessage, db, game, gameId, now]);
-
   const handleSubmit = useCallback(async () => {
     if (!db || !game || !gameId || !userId || !isPlayer || isSubmitting) return;
     if (!isMyTurn && game.gameType === 'multiplayer') {
@@ -860,6 +815,12 @@ export default function GamePage() {
       return;
     }
     const guess = currentGuess.trim().toLowerCase();
+
+    if (guess.includes(' ')) {
+      toast({ variant: 'destructive', title: 'Incomplete word', description: 'Please fill all empty boxes.' });
+      return;
+    }
+
     if (guess.length !== game.wordLength) {
       toast({ variant: 'destructive', title: 'Too short', description: 'Need more letters.' });
       return;
@@ -940,6 +901,11 @@ export default function GamePage() {
 
       const gameRef = doc(db, 'games', gameId);
       await updateDoc(gameRef, updatePayload);
+      setLockedIndices(new Set());
+      setSelectedIndex(null); // Also clear selection
+      if (isCoopMode) {
+        clearTyping();
+      }
       if (isWin) {
         toast({
           title: isCoopMode ? 'Team victory!' : 'Victory!',
@@ -947,6 +913,33 @@ export default function GamePage() {
         });
       } else if (outOfAttempts) {
         toast({ title: 'Out of tries', description: `Answer: ${game.solution.toUpperCase()}` });
+      }
+
+      // [FIX] Auto-finalize match if this was the last round/winning move
+      if (game.gameType === 'multiplayer' && game.multiplayerMode === 'pvp' && game.matchState && (isWin || outOfAttempts)) {
+        const currentRound = game.matchState.currentRound;
+        const roundsSetting = game.roundsSetting ?? 1;
+        const maxWins = game.matchState.maxWins;
+
+        // Calculate projected stats to see if match ends here
+        const myCurrentWins = game.matchState.scores[userId] || 0;
+        const projectedWins = isWin ? myCurrentWins + 1 : myCurrentWins;
+
+        const isScoreWin = projectedWins >= maxWins;
+        const isLastRound = currentRound >= roundsSetting;
+
+        // If this move concludes the MATCH, trigger the server action immediately
+        if (isScoreWin || isLastRound) {
+          const authToken = await user?.getIdToken?.();
+          // previousWinnerId should be userId if isWin, else null (draw/loss)
+          // Note: In PvP, if I run out of attempts, it doesn't necessarily mean the OTHER person won yet?
+          // Actually, if updatePayload.status is 'completed', we forced the round to end.
+          // So we treat it as a round completion. 
+          // If isWin=false, we pass null? Or should we wait?
+          // If status='completed', the round is definitely OVER.
+          // So we MUST advance.
+          await advanceGameRound(gameId, isWin ? userId : null, authToken);
+        }
       }
     } catch (error) {
       console.error('Failed to submit guess', error);
@@ -970,7 +963,183 @@ export default function GamePage() {
     toast,
     userId,
     validateWord,
+    clearTyping,
   ]);
+
+  const addLetter = useCallback(
+    (letter: string) => {
+      if (!game || !isPlayer || !isMyTurn || game.status !== 'in_progress') return;
+
+      const maxLength = game.wordLength;
+      const normalized = letter.toLowerCase();
+      const isLocked = (idx: number) => lockedIndices.has(idx);
+
+      let nextGuess = currentGuess;
+      // Find where we should insert
+      let targetIndex = selectedIndex;
+
+      // If no selection, find the first empty slot (space) from the left
+      if (targetIndex === null) {
+        // Pad to ensure we can check slots up to limit
+        const paddedToCheck = nextGuess.padEnd(maxLength, ' ');
+        const firstSpace = paddedToCheck.indexOf(' ');
+        if (firstSpace !== -1 && firstSpace < maxLength) {
+          targetIndex = firstSpace;
+        } else {
+          // No space found and no selection? If not full, append (standard behavior)
+          if (nextGuess.length < maxLength) {
+            targetIndex = nextGuess.length;
+          } else {
+            return; // Full
+          }
+        }
+      }
+
+      // If target is locked, skip right until unlocked
+      while (targetIndex < maxLength && isLocked(targetIndex)) {
+        targetIndex++;
+      }
+
+      if (targetIndex >= maxLength) return;
+
+      // Ensure string is long enough to insert at targetIndex
+      if (nextGuess.length <= targetIndex) {
+        nextGuess = nextGuess.padEnd(targetIndex + 1, ' ');
+      }
+
+      const chars = nextGuess.split('');
+      chars[targetIndex] = normalized;
+
+      const newGuess = chars.join('').slice(0, maxLength); // Ensure max length
+
+      const pulseId = Date.now();
+      setKeyPulse({ letter: normalized, id: pulseId });
+      setTilePulse({ index: targetIndex, id: pulseId });
+      setCurrentGuess(newGuess);
+
+      if (game.multiplayerMode === 'co-op') {
+        const row = game.guesses?.length ?? 0;
+        broadcastTyping(newGuess, row);
+      }
+
+      // Auto-advance selection
+      if (selectedIndex !== null) {
+        let nextSem = targetIndex + 1;
+        while (nextSem < maxLength && isLocked(nextSem)) {
+          nextSem++;
+        }
+        if (nextSem < maxLength) {
+          setSelectedIndex(nextSem);
+        } else {
+          setSelectedIndex(null);
+        }
+      }
+    },
+    [currentGuess, game, isMyTurn, isPlayer, lockedIndices, selectedIndex, broadcastTyping]
+  );
+
+  const removeLetter = useCallback(() => {
+    if (!canInteract) return;
+
+    const maxLength = game?.wordLength ?? 5;
+    const isLocked = (idx: number) => lockedIndices.has(idx);
+    let nextGuess = currentGuess;
+
+    let targetIndex = selectedIndex;
+
+    if (targetIndex !== null) {
+      // Selection mode behavior
+      const padded = nextGuess.padEnd(maxLength, ' ');
+      const chars = padded.split('');
+      chars[targetIndex] = ' ';
+      const newVal = chars.join('').trimEnd();
+      setCurrentGuess(newVal);
+
+      if (game?.multiplayerMode === 'co-op') {
+        const row = game.guesses?.length ?? 0;
+        broadcastTyping(newVal, row);
+      }
+
+      // Move left
+      let prev = targetIndex - 1;
+      while (prev >= 0 && isLocked(prev)) {
+        prev--;
+      }
+
+      if (prev >= 0) {
+        setSelectedIndex(prev);
+      }
+    } else {
+      // Normal mode behavior
+      const padded = nextGuess.padEnd(maxLength, ' ');
+      for (let i = maxLength - 1; i >= 0; i--) {
+        if (padded[i] !== ' ' && !isLocked(i)) {
+          const chars = padded.split('');
+          chars[i] = ' ';
+          const newVal = chars.join('').trimEnd();
+          setCurrentGuess(newVal);
+
+          if (game?.multiplayerMode === 'co-op') {
+            const row = game.guesses?.length ?? 0;
+            broadcastTyping(newVal, row);
+          }
+          break;
+        }
+      }
+    }
+  }, [canInteract, currentGuess, game?.wordLength, game?.multiplayerMode, game?.guesses?.length, lockedIndices, selectedIndex, broadcastTyping]);
+
+  /* Hidden Input Logic (Dependent on above functions) */
+  const hiddenInputRef = useRef<HTMLInputElement>(null);
+
+  const focusHiddenInput = useCallback(() => {
+    if (hiddenInputRef.current) {
+      hiddenInputRef.current.focus({ preventScroll: true });
+    }
+  }, []);
+
+  const handleHiddenInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    if (!val) return;
+    const char = val.slice(-1);
+    if (/^[a-zA-Z]$/.test(char)) {
+      addLetter(char);
+    }
+    e.target.value = '';
+  }, [addLetter]);
+
+  const handleHiddenInputKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Backspace') {
+      removeLetter();
+    } else if (e.key === 'Enter') {
+      void handleSubmit();
+    }
+  }, [removeLetter, handleSubmit]);
+
+  /* Interaction Handlers */
+  useEffect(() => {
+    if (!gameId) return;
+    const unsub = onSnapshot(doc(db, 'games', gameId), (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data() as GameDocument;
+        setGame({ ...data, id: docSnap.id });
+        setLoading(false);
+      } else {
+        setLoading(false);
+      }
+    });
+    return () => unsub();
+  }, [db, gameId]);
+
+  /* Selection Logic */
+  const handleTileClick = useCallback((index: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (isLongPressRef.current) return; // Should be caught by TouchEnd preventDefault but double check
+    if (!game || game.status !== 'in_progress' || !isPlayer || !isMyTurn) return;
+
+    setSelectedIndex(index);
+    focusHiddenInput();
+  }, [game, isMyTurn, isPlayer, focusHiddenInput]);
 
   useEffect(() => {
     if (!game || game.status !== 'in_progress' || !isPlayer || !isMyTurn) return;
@@ -1007,6 +1176,43 @@ export default function GamePage() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [addLetter, chatComposerFocused, game, handleSubmit, isMyTurn, isPlayer, removeLetter]);
+
+  /* Interaction Handlers - Touch / Click / Background */
+  const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const isLongPressRef = useRef(false);
+
+  // Background click to deselect
+  const handleBackgroundClick = useCallback((e: React.MouseEvent) => {
+    if (e.defaultPrevented) return;
+    setSelectedIndex(null);
+  }, []);
+
+  const handleTileTouchStart = useCallback((index: number) => {
+    if (!isMyTurn || !isPlayer || game?.status !== 'in_progress') return;
+    isLongPressRef.current = false;
+    longPressTimerRef.current = setTimeout(() => {
+      isLongPressRef.current = true;
+      setLockedIndices(prev => {
+        const next = new Set(prev);
+        if (next.has(index)) next.delete(index);
+        else next.add(index);
+        return next;
+      });
+      if (navigator.vibrate) navigator.vibrate(50);
+    }, 500); // 500ms long press
+  }, [game?.status, isMyTurn, isPlayer]);
+
+  const handleTileTouchEnd = useCallback((index: number, e: React.MouseEvent | React.TouchEvent) => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    if (isLongPressRef.current) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+  }, []);
 
   const handleCopyLobbyLink = useCallback(async () => {
     try {
@@ -1055,12 +1261,34 @@ export default function GamePage() {
   }, [db, gameId, hasVotedToEnd, toast, userId]);
 
   const handleRematch = useCallback(async () => {
-    if (!firebaseConfig || !userId || !game) return;
+    if (!firebaseConfig || !userId || !game || !db) return;
+    // Voting Logic for Rematch
     try {
-      const authToken = await user?.getIdToken?.();
-      if (!authToken) {
-        throw new Error('Missing auth token');
+      const gameRef = doc(db, 'games', game.id!); // assume gameId is in scope or game.id
+      const currentVotes = game.rematchVotes ?? [];
+      const totalPlayers = game.players.length;
+
+      // If already voted, do nothing (wait)
+      if (currentVotes.includes(userId)) return;
+
+      if (game.gameType === 'solo' || totalPlayers < 2) {
+        // Direct Create
+      } else {
+        // Add Vote
+        await updateDoc(gameRef, {
+          rematchVotes: arrayUnion(userId)
+        });
+        // If not last vote, return and wait
+        if (currentVotes.length + 1 < totalPlayers) {
+          toast({ title: 'Vote registered', description: 'Waiting for opponent...' });
+          return;
+        }
       }
+
+      // If we are here, we are the last voter (or solo), so WE facilitate the creation
+      const authToken = await user?.getIdToken?.();
+      if (!authToken) throw new Error('Missing auth token');
+
       const newGameId = await createGame(
         {
           creatorId: userId,
@@ -1069,17 +1297,28 @@ export default function GamePage() {
           wordLength: game.wordLength,
           matchTime: game.matchTime,
           turnTime: game.turnTime ?? 'unlimited',
+          roundsSetting: game.roundsSetting,
         },
         firebaseConfig,
         authToken
       );
+
       if (!newGameId) throw new Error('Failed to create rematch');
-      router.push(game.gameType === 'multiplayer' ? `/lobby/${newGameId}` : `/game/${newGameId}`);
+
+      // Update current game to point to new game (for everyone to redirect)
+      if (game.gameType !== 'solo') {
+        await updateDoc(gameRef, {
+          rematchGameId: newGameId
+        });
+      } else {
+        router.push(`/game/${newGameId}`);
+      }
+
     } catch (error) {
       console.error('Failed to start rematch', error);
       toast({ variant: 'destructive', title: 'Rematch failed', description: 'Please try again.' });
     }
-  }, [game, router, toast, user, userId]);
+  }, [game, firebaseConfig, userId, db, user, toast, router]);
 
   const clearDebugResult = useCallback(() => {
     setDebugResultVariant(null);
@@ -1149,6 +1388,71 @@ export default function GamePage() {
     return rows;
   }, [isMyTurn, liveGuess, game, isPlayer]);
 
+  // Effect to broadcast current guess when it changes (simpler than hooking into add/remove)
+  useEffect(() => {
+    if (!game || !isPlayer || !isMyTurn || game.multiplayerMode !== 'co-op') return;
+    const row = game.guesses?.length ?? 0;
+    broadcastTyping(currentGuess, row);
+  }, [currentGuess, game, isPlayer, isMyTurn, broadcastTyping]);
+
+  const activePeerTyping = useMemo(() => {
+    if (!isCoopMode || isMyTurn || !game) return null;
+    const activeRow = game.guesses?.length ?? 0;
+    // Find a peer who is typing on this row
+    // If multiple, just pick one (first entry)
+    const entry = Object.values(peerTyping).find(p => p.rowIndex === activeRow && p.guess);
+    return entry ? entry.guess : null;
+  }, [isCoopMode, isMyTurn, game, peerTyping]);
+
+  // Merge peer typing into board rows for display if it's not my turn
+  const displayRows = useMemo(() => {
+    // Start with base rows
+    let rows = boardRows;
+
+    // 1. Inject Peer Typing (if applicable)
+    if (activePeerTyping) {
+      rows = rows.map(row => {
+        const isCurrentRow = boardRows.indexOf(row) === (game?.guesses?.length ?? 0);
+        if (isCurrentRow && (row.state === 'active' || row.state === 'empty')) { // catch empty too if !isMyTurn
+          const padded = activePeerTyping.padEnd(game?.wordLength ?? 5, ' ');
+          return {
+            ...row,
+            letters: padded.split(''),
+            state: 'active' as const,
+            isPeerInput: true,
+          };
+        }
+        return row;
+      });
+    }
+
+    // 2. Inject Match Bonus (Green Letter)
+    if (game?.matchState?.roundBonus?.beneficiaryId === userId && game.matchState.roundBonus.revealedLetter) {
+      const { revealedLetterIndex, revealedLetter } = game.matchState.roundBonus;
+      rows = rows.map(row => {
+        const isCurrentRow = boardRows.indexOf(row) === (game?.guesses?.length ?? 0);
+        // Only inject into the ACTIVE/CURRENT row (where user is typing)
+        if (isCurrentRow) {
+          const letters = [...row.letters];
+          letters[revealedLetterIndex] = revealedLetter.toUpperCase();
+
+          const evaluations = [...row.evaluations];
+          evaluations[revealedLetterIndex] = 'correct'; // Show as Green
+
+          return {
+            ...row,
+            letters,
+            evaluations,
+            // Ensure state is active so it renders potentially
+            state: row.state === 'empty' ? 'active' : row.state,
+          };
+        }
+        return row;
+      });
+    }
+    return rows;
+  }, [boardRows, activePeerTyping, game, userId]);
+
   const matchCountdown = formatCountdown(game?.matchDeadline ?? null, now);
   const turnCountdown = formatCountdown(game?.turnDeadline ?? null, now);
   const submittedGuessCount = game?.guesses?.length ?? 0;
@@ -1161,6 +1465,45 @@ export default function GamePage() {
   const solutionWord = (game?.solution ?? 'DEBUG').toUpperCase();
   const baseResultHeading = (() => {
     if (!game) return 'Match complete';
+
+    // PvP Best-of-3 Logic
+    if (game.matchState && !isCoopMode) {
+      const isMatchEnd = game.matchState.isMatchOver;
+      const isMe = game.winnerId === userId;
+      // Identify if this is potentially the final round
+      // 1. Single round game
+      const isSingleRound = (game.roundsSetting ?? 1) === 1;
+      // 2. Max wins reached? (Handled by isMatchOver usually, but simplistic check:)
+      const currentScore = (game.matchState.scores[game.winnerId ?? ''] ?? 0) + 1;
+      const isScoreWin = typeof game.winnerId === 'string' && currentScore >= game.matchState.maxWins;
+      // 3. Round limit reached?
+      const roundsSetting = game.roundsSetting ?? 1;
+      const isLastRound = game.matchState.currentRound >= roundsSetting;
+
+      const isFinalRound = isSingleRound || isScoreWin || isLastRound;
+
+      const winnerName = isMe ? 'You' : formatPlayerLabel(game.winnerId, 'Opponent');
+
+      if (isMatchEnd || (isFinalRound && game.winnerId)) {
+        // Recalculate isMe for the single-round case if needed (usually same as round winner)
+        const effectiveWinnerId = game.matchState.matchWinnerId ?? game.winnerId;
+        const effectiveIsMe = effectiveWinnerId === userId;
+
+        if (isMatchEnd && !effectiveWinnerId) {
+          return 'MATCH DRAW!';
+        }
+
+        return effectiveIsMe ? 'MATCH VICTORY!' : 'MATCH DEFEAT';
+      } else {
+        // Round Over
+        if (game.winnerId) {
+          return `Round ${game.matchState.currentRound} Winner: ${winnerName}`;
+        }
+        return 'Round Draw';
+      }
+    }
+
+
     if (isCoopMode && game.winnerId) {
       if (game.winnerId === userId) {
         return teammateGroupLabel ? `Victory with ${teammateGroupLabel}` : 'You cracked it!';
@@ -1217,12 +1560,70 @@ export default function GamePage() {
   const didWin = debugOverrides?.didWin ?? actualDidWin;
   const didLose = debugOverrides?.didLose ?? actualDidLose;
   const resultHeading = debugOverrides?.heading ?? baseResultHeading;
+  const isMatchDraw = resultHeading === 'MATCH DRAW!';
+  const [showBonusPopup, setShowBonusPopup] = useState(false);
+  const [lastBonusRound, setLastBonusRound] = useState(-1);
+
+  // Tiebreaker Announcement State
+  const [showTiebreakerPopup, setShowTiebreakerPopup] = useState(false);
+  const [tiebreakerShown, setTiebreakerShown] = useState(false);
+
+  // Trigger Tiebreaker Popup
+  useEffect(() => {
+    if (!game || !game.matchState || !isMultiplayerGame || game.multiplayerMode !== 'pvp' || isSubmitting) return;
+
+    const roundsSetting = game.roundsSetting ?? 1;
+    // Condition: Final Round (e.g. Round 3 of 3, or Round 5 of 5)
+    // Actually user said "start of 3rd round on 3 round games".
+    // currentRound is 1-based. So if currentRound === roundsSetting.
+    const isFinalRound = game.matchState.currentRound === roundsSetting;
+
+    // We only show this for multi-round games (3 or 5 rounds)
+    if (isFinalRound && roundsSetting > 1 && !tiebreakerShown && (game.guesses?.length ?? 0) === 0) {
+      // Check for Tie
+      const myId = userId ?? '';
+      const otherId = game.players.find(p => p !== myId) ?? '';
+      const myScore = game.matchState.scores[myId] || 0;
+      const otherScore = game.matchState.scores[otherId] || 0;
+
+      // User specific scores: 0-0, 1-1, 2-2
+      if (myScore === otherScore) {
+        setShowTiebreakerPopup(true);
+        setTiebreakerShown(true);
+      }
+    }
+  }, [game, isMultiplayerGame, userId, tiebreakerShown, isSubmitting]);
+
+  // Close popup if game goes back to in_progress (e.g. new round started)
+  // But keep it if we are just visualizing a "Finalizing..." state
+  useEffect(() => {
+    if (game?.status === 'in_progress' && showResultPopup) {
+      setShowResultPopup(false);
+    }
+  }, [game?.status, showResultPopup]);
+
+  useEffect(() => {
+    // Check for round bonus at start of round
+    const bonus = game?.matchState?.roundBonus;
+    const currentRound = game?.matchState?.currentRound ?? 0;
+
+    // Only show if we have a bonus, we haven't shown it for this round yet, and it's practically the start
+    // (We use guesses length check or just ensure it triggers once per round via lastBonusRound)
+    if (bonus && currentRound !== lastBonusRound && (game.guesses?.length ?? 0) === 0) {
+      setShowBonusPopup(true);
+      setLastBonusRound(currentRound);
+    }
+  }, [game?.matchState?.currentRound, game?.matchState?.roundBonus, game?.guesses?.length, lastBonusRound]);
+
   const defaultWinMessage = (() => {
     if (isCoopMode) {
       if (teammateGroupLabel) {
         return `You cracked it with ${teammateGroupLabel}.`;
       }
       return 'Word cracked! Celebrate the streak.';
+    }
+    if (game?.matchState && !game.matchState.isMatchOver) {
+      return "Great job! Get ready for the next round.";
     }
     if (rivalGroupLabel) {
       return `You stayed ahead of ${rivalGroupLabel} and locked in the word.`;
@@ -1242,7 +1643,7 @@ export default function GamePage() {
     return 'Another player solved it before you did.';
   })();
   const confettiPieces = useMemo<ConfettiPiece[]>(() => {
-    if (!didWin) return [];
+    if (!didWin && !isMatchDraw) return [];
     const seededRandom = (index: number, offset: number) => {
       const value = Math.sin(index * 991 + confettiSeed * 137 + offset * 29.7) * 10000;
       return value - Math.floor(value);
@@ -1251,10 +1652,123 @@ export default function GamePage() {
       color: confettiPalette[index % confettiPalette.length],
       left: seededRandom(index, 1) * 100,
       delay: seededRandom(index, 2) * 0.8,
-      duration: 2.4 + seededRandom(index, 3) * 1.2,
+      duration: 2.2 + seededRandom(index, 3),
       rotation: seededRandom(index, 4) * 360,
     }));
-  }, [confettiSeed, didWin]);
+  }, [didWin, isMatchDraw, confettiSeed]);
+
+  const handleNextRound = useCallback(async () => {
+    if (!gameId || isSubmitting || !db || !userId) return;
+    setIsSubmitting(true);
+    try {
+      // Vote Logic
+      const gameRef = doc(db, 'games', gameId);
+      const currentVotes = game?.nextRoundVotes ?? [];
+      const totalPlayers = game?.players?.length ?? 0;
+
+      // If single player mode, just proceed
+      if (game?.gameType === 'solo' || totalPlayers < 2) {
+        const previousWinnerId = game?.winnerId || null;
+        const currentRound = game?.matchState?.currentRound ?? 1;
+        await advanceGameRound(gameId, previousWinnerId, currentRound);
+        return;
+      }
+
+      // Check if I already voted
+      if (!currentVotes.includes(userId)) {
+        await updateDoc(gameRef, {
+          nextRoundVotes: arrayUnion(userId)
+        });
+
+        // Optimistic check: if this vote completes the set?
+        // Actually, let the realtime listener handle the "all voted" trigger?
+        // Or trigger it here if (currentVotes.length + 1 >= totalPlayers)
+        if (currentVotes.length + 1 >= totalPlayers) {
+          const previousWinnerId = game?.winnerId || null;
+          const currentRound = game?.matchState?.currentRound ?? 1;
+          await advanceGameRound(gameId, previousWinnerId, currentRound);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to vote next round:', error);
+      toast({
+        variant: 'destructive',
+        title: 'Error',
+        description: 'Failed to register vote.',
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
+  }, [gameId, isSubmitting, db, userId, game?.nextRoundVotes, game?.players?.length, game?.gameType, game?.winnerId, toast]);
+
+  // Auto-advance round when all players have voted
+  useEffect(() => {
+    if (!game || !gameId || !userId || game.status !== 'completed') return;
+
+    // Only for multiplayer games
+    if (game.gameType === 'solo') return;
+
+    const totalPlayers = game.players.length;
+    const votes = game.nextRoundVotes ?? [];
+
+    // If everyone has voted
+    if (votes.length >= totalPlayers && totalPlayers > 1) {
+      // Deterministic trigger: The first player alphabetically (or by some stable sort) triggers the advance
+      // This prevents race conditions where multiple clients try to call it simultaneously
+      const sortedPlayers = [...game.players].sort();
+      const responsiblePlayerId = sortedPlayers[0];
+
+      if (userId === responsiblePlayerId) {
+        // We are the responsible client
+        const performAdvance = async () => {
+          try {
+            const previousWinnerId = game.winnerId || null;
+            const currentRound = game.matchState?.currentRound ?? 1;
+            await advanceGameRound(gameId, previousWinnerId, currentRound);
+          } catch (err) {
+            console.error("Failed to auto-advance round", err);
+          }
+        };
+        void performAdvance();
+      }
+    }
+  }, [game, gameId, userId]);
+
+  // Auto-Redirect on Rematch
+  useEffect(() => {
+    if (game?.rematchGameId) {
+      router.push(`/lobby/${game.rematchGameId}`);
+    }
+  }, [game?.rematchGameId, router]);
+
+  // Auto-advance if it's the final round and we have a winner but match isn't over
+  useEffect(() => {
+    if (!game || !game.matchState || game.matchState.isMatchOver || isSubmitting) return;
+
+    if (!game.winnerId) {
+      // If it's a draw, ensure we still check if it's the final round
+    }
+
+    const isSingleRound = (game.roundsSetting ?? 1) === 1;
+    // Calculate projected score IF there is a winner
+    const currentScore = game.winnerId
+      ? (game.matchState.scores[game.winnerId] ?? 0) + 1
+      : 0; // If draw, score doesn't increase
+
+    const isScoreWin = game.winnerId && currentScore >= game.matchState.maxWins;
+    const roundsSetting = game.roundsSetting ?? 1;
+    const isLastRound = game.matchState.currentRound >= roundsSetting;
+
+    if (isSingleRound || isScoreWin || isLastRound) {
+      // It is the final round (or win), but isMatchOver is false.
+      // Auto-trigger next round to finalize it.
+      const timer = setTimeout(() => {
+        void handleNextRound();
+      }, 1500);
+      return () => clearTimeout(timer);
+    }
+  }, [game, handleNextRound, isSubmitting]);
+
   const headingFontFamily = didWin ? '"Soopafresh", "Moms", sans-serif' : '"Moms", "Soopafresh", sans-serif';
   const messageFontFamily = didWin ? '"Soopafresh", "Moms", sans-serif' : '"Moms", "Soopafresh", sans-serif';
   const replayButtonClasses = cn(
@@ -1352,18 +1866,34 @@ export default function GamePage() {
   }
 
   const currentGuessPreview = liveGuess.padEnd(game.wordLength, ' ');
-  const timerPills = [
+  const timerPills: { label: string; value: string }[] = [
     matchCountdown ? { label: 'Match', value: matchCountdown } : null,
     turnCountdown ? { label: 'Turn', value: turnCountdown } : null,
-  ].filter(Boolean) as Array<{ label: string; value: string }>;
-  const timerIconLookup: Record<'Match' | 'Turn', LucideIcon> = {
-    Match: Timer,
-    Turn: Clock3,
-  };
+  ].filter((item): item is { label: string; value: string } => Boolean(item));
+  const timerIconLookup = { Match: Timer, Turn: Clock3 };
 
-  return (
-    <div className="relative min-h-screen overflow-hidden bg-[hsl(var(--panel-neutral))] text-foreground dark:bg-background animate-theme">
+  return (<>
+    <div
+      className="relative min-h-screen overflow-hidden bg-[hsl(var(--panel-neutral))] text-foreground dark:bg-background animate-theme"
+      onClick={handleBackgroundClick}
+    >
       <GraffitiBackground zIndex={0} />
+
+      {/* Hidden input for mobile keyboard trigger */}
+      {/* Fixed positioning keeps it in viewport to prevent scroll jumps */}
+      <input
+        ref={hiddenInputRef}
+        type="text"
+        className="fixed left-0 top-0 h-px w-px opacity-0 pointer-events-none"
+        onChange={handleHiddenInputChange}
+        onKeyDown={handleHiddenInputKeyDown}
+        autoComplete="off"
+        autoCorrect="off"
+        autoCapitalize="off"
+        spellCheck="false"
+        aria-hidden="true"
+      />
+
       <div className="pointer-events-none absolute inset-0 z-[1]">
         <div
           className="absolute left-1/2 top-10 hidden h-[520px] w-[520px] -translate-x-1/2 rounded-full blur-[150px] opacity-90 sm:block dark:opacity-100"
@@ -1443,49 +1973,176 @@ export default function GamePage() {
               )}
             />
             <div className="relative space-y-0">
-              <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div className="flex flex-wrap items-center gap-2 ">
-                  {modeMeta && (
-                    <span className="inline-flex items-center gap-2 rounded-full border border-transparent bg-[hsl(var(--primary))] px-4 py-2 text-xs font-semibold uppercase tracking-[0.25em] text-[hsl(var(--primary-foreground))] shadow-[0_15px_35px_rgba(255,140,0,0.3)] dark:border-[hsla(var(--primary)/0.45)] dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12] dark:text-muted-foreground dark:shadow-none">
-                      <modeMeta.icon className="h-4 w-4" />
-                      <span>{modeMeta.label}</span>
-                    </span>
-                  )}
-                  <span className="inline-flex items-center gap-2 rounded-full border border-transparent bg-[hsl(var(--primary))] px-4 py-2 text-sm text-[hsl(var(--primary-foreground))] shadow-[0_12px_30px_rgba(255,140,0,0.28)] dark:border-[hsla(var(--primary)/0.45)] dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12] dark:text-muted-foreground dark:shadow-none">
-                    <Users className="h-4 w-4" />
-                    <span className="font-mono text-base text-[hsl(var(--primary-foreground))] dark:text-foreground">{game.players.length}</span>
-                  </span>
-                  {isMultiplayerGame && (
-                    <span className="inline-flex items-center gap-2 rounded-full border border-transparent bg-[hsl(var(--accent))] px-4 py-2 text-xs font-semibold uppercase tracking-[0.25em] text-[hsl(var(--accent-foreground))] shadow-[0_12px_32px_rgba(16,185,129,0.32)] dark:border-[hsla(var(--accent)/0.45)] dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12] dark:text-muted-foreground dark:shadow-none">
-                      <Clock3 className="h-4 w-4" />
-                      <span>{turnStatusCopy ?? 'Waiting'}</span>
-                    </span>
-                  )}
-                </div>
-                {timerPills.length > 0 && (
-                  <div className="flex flex-wrap items-start gap-2 sm:justify-end">
-                    {timerPills.map(({ label, value }) => (
-                      <span
-                        key={`board-timer-${label}`}
-                        className="inline-flex items-center gap-3 rounded-full border border-transparent bg-[hsl(var(--accent))] px-4 py-2 text-[hsl(var(--accent-foreground))] shadow-[0_12px_32px_rgba(16,185,129,0.32)] dark:border-[hsla(var(--accent)/0.5)] dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12] dark:text-foreground dark:shadow-none"
-                      >
-                        {(() => {
-                          const TimerIcon = timerIconLookup[label as 'Match' | 'Turn'] ?? Clock3;
-                          return (
-                            <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-white/20 text-white dark:bg-white/10 dark:text-[hsl(var(--accent))]">
-                              <TimerIcon className="h-4 w-4" />
-                              <span className="sr-only">{label}</span>
-                            </span>
-                          );
-                        })()}
-                        <span className="font-mono text-sm tracking-[0.2em] text-[hsl(var(--accent-foreground))] dark:text-foreground">{value}</span>
+              <div className="mb-6">
+                {isMultiRoundPvP ? (
+                  // NEW LAYOUT
+                  <div className="flex flex-col gap-4 w-full">
+                    {/* Row 1: Turn Status (Centered) */}
+                    {isMultiplayerGame && (
+                      <div className="flex justify-center w-full">
+                        <span className="inline-flex items-center gap-2 rounded-full border border-transparent bg-[hsl(var(--accent))] px-4 py-2 text-xs font-semibold uppercase tracking-[0.25em] text-[hsl(var(--accent-foreground))] shadow-[0_12px_32px_rgba(16,185,129,0.32)] dark:border-[hsla(var(--accent)/0.45)] dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12] dark:text-muted-foreground dark:shadow-none">
+                          <Clock3 className="h-4 w-4" />
+                          <span>{turnStatusCopy ?? 'Waiting'}</span>
+                        </span>
+                      </div>
+                    )}
+
+                    {/* Row 2: Score + PvP Label (Centered) */}
+                    <div className="flex justify-center w-full">
+                      {modeMeta && (
+                        <span className={cn(
+                          "inline-flex items-center gap-2 rounded-full border border-transparent px-4 py-2 text-xs font-semibold uppercase tracking-[0.25em] shadow-[0_15px_35px_rgba(255,140,0,0.3)] dark:shadow-none transition-all",
+                          "bg-transparent border-amber-500/50 text-amber-500 dark:text-amber-400"
+                        )}>
+                          <modeMeta.icon className="h-4 w-4" />
+                          <span>{modeMeta.label}</span>
+                          <div className="mx-2 h-4 w-px bg-current opacity-20" />
+                          <div className="flex items-center gap-2 font-black" style={{ fontFamily: headingFontFamily }}>
+                            {(() => {
+                              const myScore = userId ? (game.matchState!.scores[userId] || 0) : 0;
+                              const otherId = Object.keys(game.matchState!.scores).find(id => id !== userId);
+                              const otherScore = otherId ? (game.matchState!.scores[otherId] || 0) : 0;
+                              return (
+                                <>
+                                  <span className={cn(myScore > otherScore ? 'text-green-500 dark:text-green-400' : '')}>
+                                    {myScore}
+                                  </span>
+                                  <span className="opacity-50">-</span>
+                                  <span className={cn(otherScore > myScore ? 'text-red-500 dark:text-red-400' : '')}>
+                                    {otherScore}
+                                  </span>
+                                </>
+                              );
+                            })()}
+                          </div>
+                          <div className="mx-2 h-4 w-px bg-current opacity-20" />
+                          <span>
+                            ROUND {game.matchState!.currentRound}/{game.matchState!.maxWins * 2 - 1}
+                          </span>
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Row 3: Players | Timers */}
+                    <div className="flex flex-wrap items-center justify-between w-full">
+                      {/* Left: Players */}
+                      <div className="flex justify-start">
+                        <span className="inline-flex items-center gap-2 rounded-full border border-transparent bg-[hsl(var(--primary))] px-4 py-2 text-sm text-[hsl(var(--primary-foreground))] shadow-[0_12px_30px_rgba(255,140,0,0.28)] dark:border-[hsla(var(--primary)/0.45)] dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12] dark:text-muted-foreground dark:shadow-none">
+                          <Users className="h-4 w-4" />
+                          <span className="font-mono text-base text-[hsl(var(--primary-foreground))] dark:text-foreground">{game.players.length}</span>
+                        </span>
+                      </div>
+
+                      {/* Right: Timers */}
+                      <div className="flex justify-end">
+                        {timerPills.length > 0 && (
+                          <div className="flex flex-wrap justify-end items-start gap-2">
+                            {timerPills.map(({ label, value }) => (
+                              <span
+                                key={`board-timer-${label}`}
+                                className="inline-flex items-center gap-3 rounded-full border border-transparent bg-[hsl(var(--accent))] px-4 py-2 text-[hsl(var(--accent-foreground))] shadow-[0_12px_32px_rgba(16,185,129,0.32)] dark:border-[hsla(var(--accent)/0.5)] dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12] dark:text-foreground dark:shadow-none"
+                              >
+                                {(() => {
+                                  const TimerIcon = timerIconLookup[label as 'Match' | 'Turn'] ?? Clock3;
+                                  return (
+                                    <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-white/20 text-white dark:bg-white/10 dark:text-[hsl(var(--accent))]">
+                                      <TimerIcon className="h-4 w-4" />
+                                      <span className="sr-only">{label}</span>
+                                    </span>
+                                  );
+                                })()}
+                                <span className="font-mono text-sm tracking-[0.2em] text-[hsl(var(--accent-foreground))] dark:text-foreground">{value}</span>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  // EXISTING LAYOUT
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="flex flex-wrap items-center gap-2 ">
+                      {modeMeta && (
+                        <span className={cn(
+                          "inline-flex items-center gap-2 rounded-full border border-transparent px-4 py-2 text-xs font-semibold uppercase tracking-[0.25em] shadow-[0_15px_35px_rgba(255,140,0,0.3)] dark:shadow-none transition-all",
+                          isMultiplayerGame && game.multiplayerMode === 'pvp' && (game.matchState?.maxWins ?? 1) > 1
+                            ? "bg-transparent border-amber-500/50 text-amber-500 dark:text-amber-400"
+                            : "bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] dark:border-[hsla(var(--primary)/0.45)] dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12] dark:text-muted-foreground"
+                        )}>
+                          <modeMeta.icon className="h-4 w-4" />
+                          <span>{modeMeta.label}</span>
+
+                          {/* Merged Score & Round Info for PvP Multi-round */}
+                          {isMultiplayerGame && game.multiplayerMode === 'pvp' && game.matchState && game.matchState.maxWins > 1 && (
+                            <>
+                              <div className="mx-2 h-4 w-px bg-current opacity-20" />
+                              <div className="flex items-center gap-2 font-black" style={{ fontFamily: headingFontFamily }}>
+                                {(() => {
+                                  const myScore = userId ? (game.matchState!.scores[userId] || 0) : 0;
+                                  const otherId = Object.keys(game.matchState!.scores).find(id => id !== userId);
+                                  const otherScore = otherId ? (game.matchState!.scores[otherId] || 0) : 0;
+                                  return (
+                                    <>
+                                      <span className={cn(myScore > otherScore ? 'text-green-500 dark:text-green-400' : '')}>
+                                        {myScore}
+                                      </span>
+                                      <span className="opacity-50">-</span>
+                                      <span className={cn(otherScore > myScore ? 'text-red-500 dark:text-red-400' : '')}>
+                                        {otherScore}
+                                      </span>
+                                    </>
+                                  );
+                                })()}
+                              </div>
+                              <div className="mx-2 h-4 w-px bg-current opacity-20" />
+                              <span>
+                                ROUND {game.matchState.currentRound}/{game.matchState.maxWins * 2 - 1}
+                              </span>
+                            </>
+                          )}
+                        </span>
+                      )}
+
+                      <span className="inline-flex items-center gap-2 rounded-full border border-transparent bg-[hsl(var(--primary))] px-4 py-2 text-sm text-[hsl(var(--primary-foreground))] shadow-[0_12px_30px_rgba(255,140,0,0.28)] dark:border-[hsla(var(--primary)/0.45)] dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12] dark:text-muted-foreground dark:shadow-none">
+                        <Users className="h-4 w-4" />
+                        <span className="font-mono text-base text-[hsl(var(--primary-foreground))] dark:text-foreground">{game.players.length}</span>
                       </span>
-                    ))}
+                      {isMultiplayerGame && (
+                        <span className="inline-flex items-center gap-2 rounded-full border border-transparent bg-[hsl(var(--accent))] px-4 py-2 text-xs font-semibold uppercase tracking-[0.25em] text-[hsl(var(--accent-foreground))] shadow-[0_12px_32px_rgba(16,185,129,0.32)] dark:border-[hsla(var(--accent)/0.45)] dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12] dark:text-muted-foreground dark:shadow-none">
+                          <Clock3 className="h-4 w-4" />
+                          <span>{turnStatusCopy ?? 'Waiting'}</span>
+                        </span>
+                      )}
+                    </div>
+                    {timerPills.length > 0 && (
+                      <div className="flex flex-wrap items-start gap-2 sm:justify-end">
+                        {timerPills.map(({ label, value }) => (
+                          <span
+                            key={`board-timer-${label}`}
+                            className="inline-flex items-center gap-3 rounded-full border border-transparent bg-[hsl(var(--accent))] px-4 py-2 text-[hsl(var(--accent-foreground))] shadow-[0_12px_32px_rgba(16,185,129,0.32)] dark:border-[hsla(var(--accent)/0.5)] dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12] dark:text-foreground dark:shadow-none"
+                          >
+                            {(() => {
+                              const TimerIcon = timerIconLookup[label as 'Match' | 'Turn'] ?? Clock3;
+                              return (
+                                <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-white/20 text-white dark:bg-white/10 dark:text-[hsl(var(--accent))]">
+                                  <TimerIcon className="h-4 w-4" />
+                                  <span className="sr-only">{label}</span>
+                                </span>
+                              );
+                            })()}
+                            <span className="font-mono text-sm tracking-[0.2em] text-[hsl(var(--accent-foreground))] dark:text-foreground">{value}</span>
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
+
+
               <div className="grid gap-2 ">
-                {boardRows.map((row, rowIndex) => {
+                {displayRows.map((row, rowIndex) => {
                   const isActiveRow = row.state === 'active';
                   return (
                     <div
@@ -1493,47 +2150,76 @@ export default function GamePage() {
                       className="mx-auto grid w-full max-w-[min(92vw,420px)] gap-2 sm:gap-3"
                       style={{ gridTemplateColumns: `repeat(${game.wordLength}, minmax(0, 1fr))` }}
                     >
-                      {row.letters.map((letter, letterIndex) => {
-                        const evaluation = row.evaluations[letterIndex] as GuessScore | null;
-                        const shouldReveal = Boolean(
-                          recentRevealMeta && row.state === 'submitted' && rowIndex === recentRevealMeta.rowIndex
+                      {row.letters.map((letter, colIndex) => {
+                        const evaluation = row.evaluations[colIndex];
+                        const isSubmitted = row.state === 'submitted';
+                        const isRevealed = revealedTiles[`${rowIndex}-${colIndex}`];
+                        const tileKey = `${rowIndex}-${colIndex}`;
+
+                        let content = letter;
+                        let className = cn(
+                          'group relative flex aspect-square items-center justify-center rounded-xl border-2 text-2xl font-bold uppercase transition-all duration-300 sm:rounded-2xl sm:text-4xl',
+                          'select-none',
+                          isLightMode
+                            ? 'bg-white border-transparent text-[#2b1409] shadow-[inset_0_-4px_4px_rgba(0,0,0,0.05),0_4px_10px_rgba(0,0,0,0.1)]'
+                            : 'bg-[#1a1d26] border-transparent text-white shadow-[0_4px_12px_rgba(0,0,0,0.25)]'
                         );
-                        const tileDelayMs = letterIndex * 140;
-                        const tileStyle: CSSProperties | undefined = shouldReveal
-                          ? {
-                            ['--tile-delay' as string]: `${tileDelayMs}ms`,
-                            ['--tile-feedback-delay' as string]: `${tileDelayMs + 360}ms`,
+
+                        if (isSubmitted) {
+                          if (revealedTiles[tileKey]) {
+                            className = cn(
+                              'group relative flex aspect-square items-center justify-center rounded-xl border-2 text-2xl font-bold uppercase transition-all duration-500 sm:rounded-2xl sm:text-4xl',
+                              evaluation ? tileTone[evaluation as GuessScore] : ''
+                            );
                           }
-                          : undefined;
-                        const tilePulseActive = Boolean(
-                          isActiveRow && tilePulse && tilePulse.index === letterIndex
-                        );
-                        const tileKey = `${rowIndex}-${letterIndex}`;
-                        const evaluationReady = Boolean(
-                          evaluation && (!shouldReveal || revealedTiles[tileKey])
-                        );
-                        const displayEvaluation = evaluationReady ? evaluation : null;
+                        } else if (row.state === 'active') {
+                          const isActive = letter !== ' ';
+                          const isSelected = selectedIndex === colIndex;
+                          const isLocked = lockedIndices.has(colIndex);
+                          const isPulse = tilePulse?.index === colIndex && tilePulse.id > 0;
+
+                          // @ts-expect-error - added custom prop in useMemo
+                          const isPeerInput = Boolean(row.isPeerInput);
+
+                          className = cn(
+                            'group relative flex aspect-square items-center justify-center rounded-xl border-2 text-2xl font-bold uppercase transition-all duration-100 sm:rounded-2xl sm:text-4xl',
+                            // Base Active Row Style (slightly distinct from inactive)
+                            'border-[hsla(var(--primary)/0.25)] bg-white/5',
+
+                            // Pulse Animation
+                            isPulse && 'scale-105 border-[hsl(var(--primary))] shadow-[0_0_20px_hsla(var(--primary)/0.4)]',
+
+                            // Locked State
+                            isLocked && 'border-[hsl(var(--accent))] shadow-[0_0_15px_hsla(var(--accent)/0.3)] bg-white/20 dark:bg-white/5 opacity-90',
+
+                            // Peer Input (Co-op)
+                            isPeerInput && !isLocked && 'border-[hsl(var(--primary)/0.5)] bg-[hsl(var(--primary)/0.1)] text-[hsl(var(--primary))]',
+
+                            // Filled Letter (User Input)
+                            isActive && !isPeerInput && !isLocked && 'border-[hsl(var(--primary))] bg-[hsl(var(--primary)/0.1)] text-foreground shadow-[inset_4px_4px_10px_rgba(0,0,0,0.22),inset_-4px_-4px_12px_rgba(255,255,255,0.2)]',
+
+                            // Selection (Ring overlay - does not interfere with border/bg)
+                            isSelected && 'ring-2 ring-[hsl(var(--primary))] ring-offset-2 ring-offset-[hsl(var(--panel-neutral))] dark:ring-offset-background',
+
+                            // Empty Selected specific polish (optional, mimicking original 'pulse' feel if desired, but ring is main)
+                            isSelected && !isActive && !isPeerInput && 'bg-[hsl(var(--primary)/0.05)]'
+                          );
+                        }
+
                         return (
                           <div
-                            key={`${rowIndex}-${letterIndex}`}
-                            style={tileStyle}
-                            className={cn(
-                              'relative flex aspect-square items-center justify-center rounded-3xl border text-2xl font-semibold uppercase tracking-wider transition-all duration-200',
-                              !displayEvaluation &&
-                              (isActiveRow
-                                ? 'border-[hsla(var(--primary)/0.35)] bg-white/40 text-[#262624] shadow-[inset_4px_4px_15px_rgba(255,255,255,0.5),inset_-4px_-4px_12px_rgba(0,0,0,0.08)] dark:border-[hsla(var(--primary)/0.4)] dark:bg-white/5 dark:text-[#ffe8d0]'
-                                : 'border-[hsla(var(--primary)/0.25)] bg-white/30 text-[#401503] dark:border-white/8 dark:bg-[#10111a]/70 dark:text-[#cbc7c1]'),
-                              displayEvaluation && displayEvaluation !== 'absent' && 'border-transparent',
-                              displayEvaluation === 'absent' && 'border-[hsl(var(--panel-border))] dark:border-white/15',
-                              displayEvaluation && tileTone[displayEvaluation],
-                              isActiveRow && !displayEvaluation && 'shadow-[inset_4px_4px_10px_rgba(0,0,0,0.22),inset_-4px_-4px_12px_rgba(255,255,255,0.2)]',
-                              shouldReveal && 'tile-animate-reveal',
-                              shouldReveal && evaluation === 'correct' && 'tile-animate-bounce',
-                              shouldReveal && evaluation === 'present' && 'tile-animate-shake',
-                              tilePulseActive && 'animate-tile-pop'
-                            )}
+                            key={colIndex}
+                            className={className}
+                            onClick={(e) => handleTileClick(colIndex, e)}
+                            onTouchStart={() => handleTileTouchStart(colIndex)}
+                            onTouchEnd={(e) => handleTileTouchEnd(colIndex, e)}
                           >
-                            {letter.trim()}
+                            {row.state === 'active' && lockedIndices.has(colIndex) && (
+                              <div className="absolute -right-1 -top-1 rounded-full bg-[hsl(var(--accent))] p-0.5 text-[hsl(var(--accent-foreground))] shadow-sm sm:-right-2 sm:-top-2 sm:p-1">
+                                <Lock className="h-2 w-2 sm:h-3 sm:w-3" />
+                              </div>
+                            )}
+                            {content}
                           </div>
                         );
                       })}
@@ -1541,8 +2227,8 @@ export default function GamePage() {
                   );
                 })}
               </div>
-            </div>
-          </div>
+            </div >
+          </div >
 
           <div
             className={cn(
@@ -1560,18 +2246,70 @@ export default function GamePage() {
             />
             <div className="relative space-y-2.5">
               {isPlayer && game.status === 'in_progress' && canInteract && (
-                <div>
+                <div className="relative">
                   <div className="flex flex-wrap justify-center gap-2">
-                    {currentGuessPreview.split('').map((letter: string, index: number) => (
-                      <div
-                        key={`preview-${index}`}
-                        className="h-11 w-11 rounded-2xl border border-white/50 bg-white/40 text-center text-lg font-semibold uppercase leading-[2.75rem] text-[#2a1409] shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] backdrop-blur dark:border-white/15 dark:bg-white/10 dark:text-white"
-                      >
-                        {letter.trim()}
-                      </div>
-                    ))}
+                    {currentGuessPreview.split('').map((letter: string, index: number) => {
+                      const isLocked = lockedIndices.has(index);
+                      const isSelected = selectedIndex === index;
+                      return (
+                        <div
+                          key={`preview-${index}`}
+                          onClick={(e) => handleTileClick(index, e)}
+                          onTouchStart={() => handleTileTouchStart(index)}
+                          onTouchEnd={(e) => handleTileTouchEnd(index, e)}
+                          onMouseDown={() => handleTileTouchStart(index)}
+                          onMouseUp={(e) => handleTileTouchEnd(index, e)}
+                          onMouseLeave={(e) => handleTileTouchEnd(index, e)}
+                          className={cn(
+                            'relative h-11 w-11 rounded-2xl border text-center text-lg font-semibold uppercase leading-[2.75rem] shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] backdrop-blur transition-all duration-200 cursor-pointer select-none',
+                            'border-white/50 bg-white/40 text-[#2a1409] dark:border-white/15 dark:bg-white/10 dark:text-white',
+                            isSelected && 'ring-2 ring-[hsl(var(--primary))] ring-offset-2 ring-offset-[hsl(var(--panel-neutral))] dark:ring-offset-background',
+                            isLocked && 'opacity-70 bg-white/20'
+                          )}
+                        >
+                          {letter.trim()}
+                          {isLocked && (
+                            <Lock className="absolute top-1 right-1 h-2.5 w-2.5 opacity-50" />
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                   <div className="mt-4 h-px w-full bg-white/50 dark:bg-white/10" />
+
+                  {/* Ghost Preview (Last Word) - Compact & Below Divider */}
+                  {(() => {
+                    const lastGuess = game.guesses?.length ? game.guesses[game.guesses.length - 1] : null;
+                    if (!lastGuess) return null;
+
+                    const { word, evaluations } = lastGuess;
+
+                    return (
+                      <div className="mt-3 flex justify-center gap-1.5 opacity-60 select-none">
+                        {word.split('').map((char, i) => {
+                          const status = evaluations[i];
+                          const colorClass =
+                            status === 'correct'
+                              ? 'border-green-500/50 bg-green-500/20 text-green-500 dark:text-green-400'
+                              : status === 'present'
+                                ? 'border-amber-500/50 bg-amber-500/20 text-amber-500 dark:text-amber-400'
+                                : 'border-white/40 bg-white/5 text-white/90 dark:border-white/20'; // absent
+
+                          return (
+                            <div
+                              key={`ghost-compact-${i}`}
+                              className={cn(
+                                "flex h-6 w-6 items-center justify-center rounded border text-[10px] font-bold uppercase shadow-sm",
+                                colorClass
+                              )}
+                            >
+                              {char}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
               {turnStatusCopy && (
@@ -1591,162 +2329,162 @@ export default function GamePage() {
                   </p>
                 </div>
               )}
-              <div className="space-y-2.5">
-                {keyboardRows.map((row) => (
-                  <div
-                    key={row}
-                    className="mx-auto flex w-full max-w-[280px] items-center justify-center gap-1 sm:max-w-[360px] sm:gap-1.5 lg:max-w-[420px]"
-                  >
-                    {row.split('').map((letter) => {
-                      const hint = keyboardHints[letter];
-                      const isAbsentKey = hint === 'absent';
-                      const pulseActive = Boolean(keyPulse && keyPulse.letter === letter);
-                      const feedbackEntry = keyboardFeedback?.entries.find((entry) => entry.letter === letter);
-                      const keyStyle: CSSProperties | undefined = feedbackEntry
-                        ? { ['--key-feedback-delay' as string]: `${feedbackEntry.delay}ms` }
-                        : undefined;
-                      return (
-                        <button
-                          key={letter}
-                          type="button"
-                          style={keyStyle}
-                          className={cn(
-                            'group relative isolate flex h-9 w-7 flex-none items-center justify-center rounded-[18px] border text-xs font-semibold uppercase tracking-wide shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] transition-all duration-200 ease-out hover:-translate-y-1 hover:shadow-[0_14px_32px_rgba(0,0,0,0.25)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsla(var(--primary)/0.5)] focus-visible:ring-offset-2 focus-visible:ring-offset-transparent sm:h-11 sm:w-9 sm:text-sm lg:h-12 lg:w-10',
-                            hint
-                              ? 'border-transparent text-white dark:text-white'
-                              : 'border-gray-400 bg-white/90 text-[#2b140c] backdrop-blur shadow-md dark:border-white/10 dark:bg-white/10 dark:text-white/80',
-                            hint && keyboardTone[hint],
-                            isAbsentKey && !isLightMode && 'dark:bg-white/[0.04] dark:text-white/30 dark:border-white/10 dark:opacity-45 dark:hover:opacity-60 dark:hover:-translate-y-0 dark:hover:shadow-none',
-                            pulseActive && 'animate-key-pop',
-                            feedbackEntry && 'keyboard-feedback',
-                            feedbackEntry && `keyboard-feedback-${feedbackEntry.evaluation}`,
-                            (!canInteract) && 'opacity-60'
-                          )}
-                          onClick={() => addLetter(letter)}
-                          disabled={!canInteract}
-                          aria-label={`Use letter ${letter}`}
-                        >
-                          <span className="relative z-[1]">{letter}</span>
-                          <span className="pointer-events-none absolute inset-0 -z-[1] rounded-[18px] opacity-0 transition-opacity duration-200 group-hover:opacity-100" style={{ background: 'radial-gradient(circle at 50% 0%, rgba(255,255,255,0.8), transparent 58%)' }} />
-                        </button>
-                      );
-                    })}
-                  </div>
-                ))}
-                <div className="flex flex-wrap items-center justify-center gap-2 sm:flex-nowrap">
-                  <Button
-                    variant="ghost"
-                    className="shrink-0 gap-2 rounded-2xl border border-[hsla(var(--accent)/0.5)] bg-[hsla(var(--accent)/0.15)] px-5 py-2 text-[hsl(var(--accent))] shadow-[0_12px_28px_rgba(0,128,96,0.2)] dark:border-[hsla(var(--accent)/0.4)] dark:bg-white/5 dark:text-[hsl(var(--accent-foreground))] sm:px-6"
-                    onClick={() => setCurrentGuess('')}
-                    disabled={!canInteract}
-                  >
-                    <RotateCcw className="h-4 w-4" /> Reset row
-                  </Button>
-                  <button
-                    type="button"
-                    className="flex h-10 w-20 items-center justify-center rounded-2xl border border-transparent bg-[hsl(var(--primary))] text-sm font-semibold uppercase text-[hsl(var(--primary-foreground))] shadow-[0_15px_35px_rgba(255,140,0,0.35)] transition-all hover:-translate-y-0.5 sm:h-12 sm:w-24 dark:bg-[hsl(var(--primary))] dark:text-[hsl(var(--primary-foreground))]"
-                    onClick={() => void handleSubmit()}
-                    disabled={!canInteract || isSubmitting}
-                    aria-label="Submit guess"
-                  >
-                    <CornerDownLeft className="h-5 w-5" aria-hidden="true" />
-                  </button>
-                  <button
-                    type="button"
-                    className="flex h-10 w-16 items-center justify-center rounded-2xl border border-transparent bg-[hsl(var(--destructive))] text-sm font-semibold uppercase text-[hsl(var(--destructive-foreground))] shadow-[0_12px_30px_rgba(255,0,72,0.3)] transition-all hover:-translate-y-0.5 sm:h-12 sm:w-18 sm:text-sm dark:bg-[hsl(var(--destructive))] dark:text-[hsl(var(--destructive-foreground))]"
-                    onClick={removeLetter}
-                    disabled={!canInteract || isSubmitting}
-                    aria-label="Delete letter"
-                  >
-                    <Delete className="h-5 w-5" aria-hidden="true" />
-                  </button>
-                </div>
-              </div>
+
+              <Keyboard
+                hints={keyboardHints}
+                onAddLetter={addLetter}
+                onDelete={removeLetter}
+                onSubmit={() => void handleSubmit()}
+                onReset={() => setCurrentGuess('')}
+                isSubmitting={isSubmitting}
+                canInteract={canInteract}
+                isLightMode={isLightMode}
+                keyPulse={keyPulse}
+                keyboardFeedback={keyboardFeedback}
+              />
             </div>
           </div>
+        </div >
+      </div >
 
-          <div className="mx-auto max-w-md rounded-[26px] border border-[hsl(var(--panel-border))] bg-[hsl(var(--panel-neutral))] p-6 shadow-xl dark:border-border dark:bg-[hsl(var(--card))]">
-            <div className="flex items-center justify-between">
-              <p className="text-xs uppercase tracking-[0.35em] text-muted-foreground">Players</p>
-              <span className="text-xs text-muted-foreground">{game.players.length} total</span>
-            </div>
-            <ul className="mt-4 space-y-3">
-              {game.players.map((playerId) => {
-                const active = (game.activePlayers ?? []).includes(playerId);
-                const isCurrentTurnPlayer = game.currentTurnPlayerId === playerId;
-                return (
-                  <li
-                    key={playerId}
+      <div className="mx-auto max-w-md rounded-[26px] border border-[hsl(var(--panel-border))] bg-[hsl(var(--panel-neutral))] p-6 shadow-xl dark:border-border dark:bg-[hsl(var(--card))]">
+        <div className="flex items-center justify-between">
+          <p className="text-xs uppercase tracking-[0.35em] text-muted-foreground">Players</p>
+          <span className="text-xs text-muted-foreground">{game.players.length} total</span>
+        </div>
+        <ul className="mt-4 space-y-3">
+          {game.players.map((playerId) => {
+            const active = (game.activePlayers ?? []).includes(playerId);
+            const isCurrentTurnPlayer = game.currentTurnPlayerId === playerId;
+            return (
+              <li
+                key={playerId}
+                className={cn(
+                  'flex items-center justify-between rounded-2xl border border-[hsl(var(--panel-border))] bg-[hsl(var(--panel-neutral))] px-4 py-3 dark:border-border dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12]',
+                  isCurrentTurnPlayer && 'border-[hsl(var(--accent))] shadow-[0_10px_24px_rgba(0,0,0,0.35)]'
+                )}
+              >
+                <div>
+                  <p className="text-sm font-semibold">{formatPlayerLabel(playerId)}</p>
+                  <p
                     className={cn(
-                      'flex items-center justify-between rounded-2xl border border-[hsl(var(--panel-border))] bg-[hsl(var(--panel-neutral))] px-4 py-3 dark:border-border dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12]',
-                      isCurrentTurnPlayer && 'border-[hsl(var(--accent))] shadow-[0_10px_24px_rgba(0,0,0,0.35)]'
+                      'text-xs',
+                      isCurrentTurnPlayer
+                        ? 'font-semibold text-[hsl(var(--accent))]'
+                        : 'text-muted-foreground'
                     )}
                   >
-                    <div>
-                      <p className="text-sm font-semibold">{formatPlayerLabel(playerId)}</p>
-                      <p
-                        className={cn(
-                          'text-xs',
-                          isCurrentTurnPlayer
-                            ? 'font-semibold text-[hsl(var(--accent))]'
-                            : 'text-muted-foreground'
-                        )}
-                      >
-                        {isCurrentTurnPlayer ? 'Taking a turn' : active ? 'Online' : 'Away'}
-                      </p>
-                    </div>
-                    <span
-                      className={cn(
-                        'h-2.5 w-2.5 rounded-full',
-                        isCurrentTurnPlayer
-                          ? 'bg-[hsl(var(--accent))]'
-                          : active
-                            ? 'bg-[hsl(var(--accent))]/60'
-                            : 'bg-muted-foreground'
-                      )}
-                    />
-                  </li>
-                );
-              })}
+                    {isCurrentTurnPlayer ? 'Taking a turn' : active ? 'Online' : 'Away'}
+                  </p>
+                </div>
+                <span
+                  className={cn(
+                    'h-2.5 w-2.5 rounded-full',
+                    isCurrentTurnPlayer
+                      ? 'bg-[hsl(var(--accent))]'
+                      : active
+                        ? 'bg-[hsl(var(--accent))]/60'
+                        : 'bg-muted-foreground'
+                  )}
+                />
+              </li>
+            );
+          })}
+        </ul>
+
+        {spectatorIds.length > 0 && (
+          <div className="mt-6">
+            <p className="text-xs uppercase tracking-[0.35em] text-muted-foreground">Spectators</p>
+            <ul className="mt-3 space-y-2">
+              {spectatorIds.map((spectatorId) => (
+                <li
+                  key={spectatorId}
+                  className="flex items-center justify-between rounded-2xl border border-[hsl(var(--panel-border))] bg-[hsl(var(--panel-sage))] px-4 py-2 text-sm dark:border-border dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12]"
+                >
+                  <span>{formatPlayerLabel(spectatorId, 'Viewer')}</span>
+                  <span className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Watching</span>
+                </li>
+              ))}
             </ul>
+          </div>
+        )}
 
-            {spectatorIds.length > 0 && (
-              <div className="mt-6">
-                <p className="text-xs uppercase tracking-[0.35em] text-muted-foreground">Spectators</p>
-                <ul className="mt-3 space-y-2">
-                  {spectatorIds.map((spectatorId) => (
-                    <li
-                      key={spectatorId}
-                      className="flex items-center justify-between rounded-2xl border border-[hsl(var(--panel-border))] bg-[hsl(var(--panel-sage))] px-4 py-2 text-sm dark:border-border dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12]"
-                    >
-                      <span>{formatPlayerLabel(spectatorId, 'Viewer')}</span>
-                      <span className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Watching</span>
-                    </li>
-                  ))}
-                </ul>
+        {game.status === 'completed' && (
+          <Button className="mt-6 w-full gap-2" onClick={handleRematch}>
+            <RefreshCcw className="h-4 w-4" /> Replay
+          </Button>
+        )}
+      </div>
+    </div >
+
+
+    {/* Tiebreaker Announcement Popup */}
+    {
+      showTiebreakerPopup && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 px-4 backdrop-blur-sm animate-in fade-in zoom-in duration-300">
+          <div className="relative w-full max-w-lg overflow-hidden rounded-[36px] border-4 border-yellow-400 bg-gradient-to-b from-yellow-300 via-amber-200 to-yellow-400 p-8 text-center shadow-[0_0_100px_rgba(234,179,8,0.6)]">
+
+            {/* Confetti Background for Popup */}
+            <div className="absolute inset-0 z-0 overflow-hidden opacity-50">
+              {Array.from({ length: 20 }).map((_, i) => (
+                <span
+                  key={i}
+                  className="absolute h-2 w-2 rounded-full bg-white"
+                  style={{
+                    left: `${Math.random() * 100}%`,
+                    top: `${Math.random() * 100}%`,
+                    animation: `pulse ${1 + Math.random()}s infinite`
+                  }}
+                />
+              ))}
+            </div>
+
+            <div className="relative z-10 flex flex-col items-center gap-6">
+              <div className="text-6xl animate-bounce">⚠️</div>
+              <h2 className="font-black text-5xl tracking-tighter text-yellow-950 drop-shadow-md" style={{ fontFamily: '"Soopafresh", sans-serif' }}>
+                TIE BREAKER!
+              </h2>
+              <p className="text-xl font-bold text-yellow-900/80 uppercase tracking-widest">
+                Final Round • Winner Takes All
+              </p>
+              <div className="w-full h-1 bg-yellow-900/10 rounded-full" />
+
+              <div className="flex gap-4">
+                <div className="text-4xl">🔥</div>
+                <div className="text-4xl">⚔️</div>
+                <div className="text-4xl">🏆</div>
               </div>
-            )}
 
-            {game.status === 'completed' && (
-              <Button className="mt-6 w-full gap-2" onClick={handleRematch}>
-                <RefreshCcw className="h-4 w-4" /> Replay
+              <Button
+                onClick={() => setShowTiebreakerPopup(false)}
+                className="w-full max-w-xs rounded-full bg-yellow-950 text-yellow-100 hover:bg-yellow-900 hover:scale-105 transition-all text-lg font-black tracking-widest py-6 shadow-xl"
+              >
+                LET'S GO!
               </Button>
-            )}
+            </div>
           </div>
         </div>
-      </div>
+      )
+    }
 
-      {showResultPopup && (
+    {
+      showResultPopup && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/85 px-3 py-6 backdrop-blur-lg sm:px-4 sm:py-10">
-          <div
+          <motion.div
+            initial={{ scale: 0.9, opacity: 0, y: 10 }}
+            animate={{ scale: 1, opacity: 1, y: 0 }}
+            exit={{ scale: 0.9, opacity: 0, y: 10 }}
+            transition={{ type: 'spring', duration: 0.5, bounce: 0.3 }}
             className={cn(
               'relative w-full max-w-xl overflow-hidden rounded-[36px] border px-5 py-8 text-center shadow-[0_35px_110px_rgba(0,0,0,0.45)] sm:px-8 sm:py-10',
-              didWin
-                ? 'border-[hsla(var(--accent)/0.35)] bg-gradient-to-b from-white via-[hsl(var(--panel-neutral))] to-[hsl(var(--panel-warm))] text-foreground dark:bg-gradient-to-b dark:from-[#2a2c36] dark:via-[#181924] dark:to-[#0d0f17] dark:text-white'
-                : 'border-[hsla(var(--destructive)/0.45)] bg-gradient-to-b from-[#fff0f0] via-[#ff9fb0] to-[#ff3f5e] text-white dark:bg-gradient-to-b dark:from-[#3a0505] dark:via-[#230202] dark:to-[#090000] dark:text-[hsl(var(--destructive-foreground))]'
+              isMatchDraw
+                ? 'border-yellow-400/50 bg-gradient-to-b from-yellow-100 via-amber-50 to-orange-100 text-yellow-900 dark:bg-gradient-to-b dark:from-yellow-950/40 dark:via-yellow-900/20 dark:to-orange-950/30 dark:text-yellow-100'
+                : didWin
+                  ? 'border-[hsla(var(--accent)/0.35)] bg-gradient-to-b from-white via-[hsl(var(--panel-neutral))] to-[hsl(var(--panel-warm))] text-foreground dark:bg-gradient-to-b dark:from-[#2a2c36] dark:via-[#181924] dark:to-[#0d0f17] dark:text-white'
+                  : 'border-[hsla(var(--destructive)/0.45)] bg-gradient-to-b from-[#fff0f0] via-[#ff9fb0] to-[#ff3f5e] text-white dark:bg-gradient-to-b dark:from-[#3a0505] dark:via-[#230202] dark:to-[#090000] dark:text-[hsl(var(--destructive-foreground))]'
             )}
           >
-            {didWin && confettiPieces.length > 0 && (
+            {(didWin || isMatchDraw) && confettiPieces.length > 0 && (
               <div key={`confetti-${confettiSeed}`} className="pointer-events-none absolute inset-0 z-0 overflow-hidden">
                 {confettiPieces.map((piece, index) => (
                   <span
@@ -1756,7 +2494,7 @@ export default function GamePage() {
                       left: `${piece.left}%`,
                       animation: `confetti-fall ${piece.duration}s linear infinite`,
                       animationDelay: `${piece.delay}s`,
-                      backgroundColor: piece.color,
+                      backgroundColor: isMatchDraw ? '#facc15' : piece.color, // Yellow confetti for draw
                     }}
                   />
                 ))}
@@ -1770,11 +2508,13 @@ export default function GamePage() {
                 </div>
               </div>
             )}
-            <div className="relative flex min-h-screen w-full flex-col items-center overflow-hidden animate-theme">
+            <div className="relative flex w-full flex-col items-center overflow-hidden animate-theme">
               <h3
                 className={cn(
                   'mt-2 text-4xl font-black leading-tight tracking-tight sm:text-5xl',
-                  didWin ? 'text-[hsl(var(--accent))] dark:text-[hsl(var(--accent))]' : 'text-[hsl(var(--destructive))] dark:text-white'
+                  isMatchDraw
+                    ? 'text-yellow-500 dark:text-yellow-400 drop-shadow-sm'
+                    : didWin ? 'text-[hsl(var(--accent))] dark:text-[hsl(var(--accent))]' : 'text-[hsl(var(--destructive))] dark:text-white'
                 )}
                 style={{ fontFamily: headingFontFamily }}
               >
@@ -1827,20 +2567,141 @@ export default function GamePage() {
                 </div>
               </div>
 
-              <div className="mt-9 grid w-full grid-cols-2 gap-3 sm:gap-4">
-                <Button variant="ghost" size="lg" onClick={handleReplayClick} className={cn('w-full', replayButtonClasses)}>
-                  <RefreshCcw className="h-4 w-4" /> REPLAY
-                </Button>
-                <Button variant="ghost" size="lg" onClick={handleHomeNavigation} className={cn('w-full', homeButtonClasses)}>
-                  <Home className="h-4 w-4" /> BACK TO HOME
-                </Button>
+              <div className="mt-9 flex w-full flex-col gap-3 sm:grid sm:grid-cols-2 sm:gap-4">
+                {game?.matchState && !game.matchState.isMatchOver ? (
+                  // Check if we are auto-advancing (Final Round)
+                  (() => {
+                    const isSingleRound = (game.roundsSetting ?? 1) === 1;
+                    const currentScore = (game.matchState.scores[game.winnerId ?? ''] ?? 0) + 1;
+                    const isScoreWin = typeof game.winnerId === 'string' && currentScore >= game.matchState.maxWins;
+                    const roundsSetting = game.roundsSetting ?? 1;
+                    const isLastRound = game.matchState.currentRound >= roundsSetting;
+                    const isFinalRound = isSingleRound || isScoreWin || isLastRound;
+
+                    if (isFinalRound) {
+                      return (
+                        <Button disabled variant="outline" size="lg" className="w-full col-span-2 opacity-80">
+                          <div className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                          FINALIZING MATCH...
+                        </Button>
+                      );
+                    }
+
+                    return (
+                      <div className="col-span-2 grid grid-cols-2 gap-3 sm:gap-4">
+                        <Button
+                          variant={game.nextRoundVotes?.includes(userId ?? '') ? "secondary" : "ghost"}
+                          size="lg"
+                          onClick={handleNextRound}
+                          className={cn(
+                            'col-span-2 sm:col-span-1 shadow-lg transition-all',
+                            game.nextRoundVotes?.includes(userId ?? '')
+                              ? 'bg-neutral-800 text-white opacity-90'
+                              : 'bg-[hsl(var(--accent))] text-[hsl(var(--accent-foreground))] hover:bg-[hsl(var(--accent)/0.9)]'
+                          )}
+                        >
+                          <Swords className="h-4 w-4 mr-2" />
+                          {game.nextRoundVotes?.includes(userId ?? '')
+                            ? `WAITING... (${game.nextRoundVotes.length}/${game.players.length})`
+                            : 'NEXT ROUND'}
+                        </Button>
+                        <Button variant="ghost" size="lg" onClick={handleHomeNavigation} className="col-span-2 sm:col-span-1 border border-border/10 bg-black/20 text-white hover:bg-black/30 dark:bg-zinc-800 dark:hover:bg-zinc-700">
+                          <DoorOpen className="h-4 w-4 mr-2" /> LEAVE
+                        </Button>
+                      </div>
+                    );
+                  })()
+                ) : (
+                  <>
+                    <Button
+                      variant={(game?.rematchVotes?.includes(userId ?? '')) ? "secondary" : "ghost"}
+                      size="lg"
+                      onClick={handleRematch}
+                      className={cn(
+                        'w-full',
+                        replayButtonClasses,
+                        (game?.rematchVotes?.includes(userId ?? '')) && 'bg-neutral-800 text-white opacity-90'
+                      )}
+                    >
+                      <RefreshCcw className="h-4 w-4" />
+                      {(game?.rematchVotes?.includes(userId ?? ''))
+                        ? `WAITING... (${game.rematchVotes.length}/${game.players.length})`
+                        : (game?.matchState?.isMatchOver ? 'NEW MATCH' : 'REPLAY')}
+                    </Button>
+                    <Button variant="ghost" size="lg" onClick={handleHomeNavigation} className={cn('w-full', homeButtonClasses)}>
+                      <Home className="h-4 w-4" /> BACK TO HOME
+                    </Button>
+                  </>
+                )}
               </div>
+
+              {/* Disconnect Warning */}
+              {game?.gameType !== 'solo' && isGameComplete && (
+                (() => {
+                  const activeCount = game?.activePlayers?.length ?? 0;
+                  const totalCount = game?.players?.length ?? 0;
+                  if (activeCount < totalCount && (game?.nextRoundVotes?.includes(userId ?? '') || game?.rematchVotes?.includes(userId ?? ''))) {
+                    return (
+                      <div className="mt-4 flex items-center justify-center gap-2 rounded-lg bg-yellow-500/10 p-2 text-xs font-medium text-yellow-500">
+                        <AlertTriangle className="h-3 w-3" />
+                        <span>Opponent seems disconnected ({activeCount}/{totalCount} online)</span>
+                      </div>
+                    );
+                  }
+                  return null;
+                })()
+              )}
             </div>
-          </div>
+          </motion.div>
+        </div>
+      )
+    }
+
+    {/* Bonus Popup (Winner's Perk) */}
+    <AnimatePresence>
+      {showBonusPopup && !!game?.matchState?.roundBonus && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 px-4 backdrop-blur-sm">
+          <motion.div
+            initial={{ scale: 0.9, opacity: 0, y: 10 }}
+            animate={{ scale: 1, opacity: 1, y: 0 }}
+            exit={{ scale: 0.9, opacity: 0, y: 10 }}
+            transition={{ type: 'spring', duration: 0.5, bounce: 0.3 }}
+            className="relative w-full max-w-sm overflow-hidden rounded-[32px] border border-[hsl(var(--accent)/0.3)] bg-gradient-to-br from-[#1b1c26] to-[#0d0e14] p-8 text-center shadow-2xl dark:from-[#1b1c26] dark:to-[#0d0e14]"
+          >
+            {/* Glow Effect */}
+            <div className="absolute inset-0 z-0 bg-[radial-gradient(circle_at_50%_0%,hsla(var(--accent)/0.15),transparent_70%)]" />
+
+            <div className="relative z-10 flex flex-col items-center gap-4">
+              <div className="flex h-16 w-16 items-center justify-center rounded-full bg-[hsl(var(--accent)/0.15)] text-[hsl(var(--accent))] shadow-[0_0_30px_hsl(var(--accent)/0.2)]">
+                <Crown className="h-8 w-8" />
+              </div>
+
+              <div className="space-y-2">
+                <h3 className="font-[family-name:var(--font-heading)] text-2xl text-white">
+                  {game.matchState.roundBonus.beneficiaryId === userId ? "Winner's Perk!" : "Opponent's Perk"}
+                </h3>
+                <p className="text-sm font-medium leading-relaxed text-muted-foreground">
+                  {game.matchState.roundBonus.beneficiaryId === userId
+                    ? "You won the last round, so you start with a free hint!"
+                    : "They won the last round, so they start with a free hint."}
+                </p>
+              </div>
+
+              <Button
+                size="lg"
+                className="mt-2 w-full rounded-xl bg-[hsl(var(--accent))] font-bold text-[hsl(var(--accent-foreground))] hover:bg-[hsl(var(--accent)/0.9)]"
+                onClick={() => setShowBonusPopup(false)}
+              >
+                READY
+              </Button>
+            </div>
+          </motion.div>
         </div>
       )}
+    </AnimatePresence>
 
-      {shouldShowChatDock && (
+    {
+      shouldShowChatDock && (
         <ChatDock
           context={chatDockContext}
           availability={chatAvailability}
@@ -1849,9 +2710,11 @@ export default function GamePage() {
           unreadCount={0}
           onComposerFocusChange={(focused) => setChatComposerFocused(focused)}
         />
-      )}
+      )
+    }
 
-      {isLocalhost && process.env.NODE_ENV !== 'production' && (
+    {
+      isLocalhost && process.env.NODE_ENV !== 'production' && (
         <div className="fixed bottom-4 left-4 z-[60] flex flex-wrap gap-2 rounded-2xl border border-dashed border-[hsla(var(--border)/0.6)] bg-background/95 p-3 text-[10px] uppercase tracking-[0.2em] shadow-2xl dark:bg-[#090b10]/90">
           {debugButtons.map(({ label, variant }) => (
             <button
@@ -1876,7 +2739,7 @@ export default function GamePage() {
             Live data
           </button>
         </div>
-      )}
-    </div>
-  );
+      )
+    }
+  </>);
 }

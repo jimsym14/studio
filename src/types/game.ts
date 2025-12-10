@@ -37,4 +37,26 @@ export interface GameDocument {
   completedAt: string | null;
   matchTime: string;
   turnTime?: string;
+  matchState?: GameMatchState;
+  roundsSetting?: number; // 1, 3, 5
+  solutions?: string[]; // Pre-generated words for all rounds
+  // Voting
+  nextRoundVotes?: string[];
+  rematchVotes?: string[];
+  rematchGameId?: string;
+}
+
+export interface GameMatchState {
+  currentRound: number;
+  scores: Record<string, number>; // { [userId]: wins }
+  draws: number;
+  maxWins: number; // 2
+  maxDraws: number; // 3
+  isMatchOver: boolean;
+  matchWinnerId?: string | null;
+  roundBonus?: {
+    beneficiaryId: string;
+    revealedLetter: string;
+    revealedLetterIndex: number;
+  };
 }

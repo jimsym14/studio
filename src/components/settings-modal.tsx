@@ -11,6 +11,7 @@ import { useTheme } from 'next-themes';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { SettingsSegmentedControl } from '@/components/settings-segmented-control';
 import {
   Dialog,
   DialogContent,
@@ -57,6 +58,7 @@ const formSchema = z
   .object({
     wordLength: z.number().min(4).max(6),
     matchTime: z.enum(['unlimited', '3', '5']),
+    roundsSetting: z.number().optional(),
     turnTime: z.enum(['unlimited', '30', '60']),
     visibility: z.enum(['public', 'private']),
     passcode: passcodeField,
@@ -76,6 +78,7 @@ type FormValues = z.infer<typeof formSchema>;
 const FORM_DEFAULTS: FormValues = {
   wordLength: 5,
   matchTime: 'unlimited',
+  roundsSetting: 1,
   turnTime: 'unlimited',
   visibility: 'public',
   passcode: '',
@@ -231,304 +234,231 @@ export function SettingsModal({ isOpen, gameType, onClose, inviteFriendId, invit
     setMultiplayerMode(mode);
   };
 
-
-
-
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
       <AnimatePresence>
         {isOpen && (
           <DialogContent className={cn(
-            "max-w-md w-[95vw] p-0 overflow-hidden max-h-[90vh] flex flex-col backdrop-blur-xl border-white/20 shadow-2xl",
+            "max-w-md w-[95vw] p-0 overflow-hidden max-h-[90vh] flex flex-col backdrop-blur-3xl border-white/20 shadow-2xl",
             gameType === 'solo'
-              ? "bg-[radial-gradient(circle_at_top_right,rgba(249,115,22,0.3)_0%,rgba(255,255,255,0.85)_40%,rgba(255,255,255,0.85)_100%)] dark:bg-[radial-gradient(circle_at_top_right,rgba(249,115,22,0.2)_0%,rgba(0,0,0,0.85)_40%,rgba(0,0,0,0.85)_100%)]"
-              : "bg-[radial-gradient(circle_at_top_right,rgba(16,185,129,0.3)_0%,rgba(255,255,255,0.85)_40%,rgba(255,255,255,0.85)_100%)] dark:bg-[radial-gradient(circle_at_top_right,rgba(16,185,129,0.2)_0%,rgba(0,0,0,0.85)_40%,rgba(0,0,0,0.85)_100%)]",
+              ? "bg-[radial-gradient(circle_at_top_right,rgba(249,115,22,0.25)_0%,rgba(255,255,255,0.9)_40%,rgba(255,255,255,0.9)_100%)] dark:bg-[radial-gradient(circle_at_top_right,rgba(249,115,22,0.15)_0%,rgba(20,20,20,0.9)_40%,rgba(20,20,20,0.95)_100%)]"
+              : "bg-[radial-gradient(circle_at_top_right,rgba(16,185,129,0.25)_0%,rgba(255,255,255,0.9)_40%,rgba(255,255,255,0.9)_100%)] dark:bg-[radial-gradient(circle_at_top_right,rgba(16,185,129,0.15)_0%,rgba(20,20,20,0.9)_40%,rgba(20,20,20,0.95)_100%)]",
             "rounded-3xl"
           )}>
             <DialogHeader className={cn(
-              "p-3 md:p-4 pb-2 md:pb-3 text-white shrink-0",
+              "px-4 py-3 text-white shrink-0",
               gameType === 'solo'
                 ? "bg-gradient-to-br from-amber-500 to-orange-600"
                 : "bg-gradient-to-br from-emerald-500 to-teal-600"
             )}>
-              <DialogTitle className="flex items-center text-xl md:text-2xl font-comic tracking-wide text-white drop-shadow-md">
-                {gameType === 'solo' ? <Crown className="mr-2 h-5 w-5 md:h-6 md:w-6" /> : <Users className="mr-2 h-5 w-5 md:h-6 md:w-6" />}
+              <DialogTitle className="flex items-center text-lg md:text-xl font-comic tracking-wide text-white drop-shadow-md">
+                {gameType === 'solo' ? <Crown className="mr-2 h-5 w-5" /> : <Users className="mr-2 h-5 w-5" />}
                 {gameType === 'solo' ? 'Singleplayer' : 'Multiplayer'}
               </DialogTitle>
             </DialogHeader>
 
-            <div className="flex-1 overflow-y-auto px-3 md:px-4 py-3 md:py-4">
+            <div className="flex-1 overflow-y-auto px-4 py-4">
               <Form {...form}>
-                <form onSubmit={form.handleSubmit(handleStartGame)} id="settings-form" className="space-y-3 md:space-y-4">
-                  <FormField
-                    control={form.control}
-                    name="wordLength"
-                    render={({ field }) => (
-                      <FormItem className="space-y-1.5 md:space-y-2">
-                        <FormLabel className="flex items-center text-sm md:text-base font-bold"><Gamepad2 className="mr-1.5 h-3.5 w-3.5 md:mr-2 md:h-4 md:w-4" /> Word Length</FormLabel>
-                        <FormControl>
-                          <RadioGroup
-                            onValueChange={(value) => field.onChange(Number(value))}
-                            defaultValue={String(field.value)}
-                            className="grid grid-cols-3 gap-2"
-                          >
-                            {[4, 5, 6].map((val) => (
-                              <FormItem key={val} className="space-y-0">
-                                <FormControl>
-                                  <RadioGroupItem value={String(val)} id={`wl-${val}`} className="sr-only" />
-                                </FormControl>
-                                <FormLabel
-                                  htmlFor={`wl-${val}`}
-                                  className={cn(
-                                    "flex flex-col items-center justify-center p-1.5 md:p-2 rounded-lg border-2 cursor-pointer transition-all duration-200 hover:scale-105",
-                                    field.value === val
-                                      ? cn(
-                                        "font-bold shadow-sm",
-                                        gameType === 'solo'
-                                          ? "border-orange-500 bg-orange-500/10 text-orange-600 dark:text-orange-400"
-                                          : "border-emerald-500 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                                      )
-                                      : "border-muted bg-background/50 hover:border-primary/50"
-                                  )}
-                                >
-                                  <span className="text-sm md:text-base font-bold font-moms">{val}</span>
-                                  <span className="text-[0.55rem] md:text-[0.6rem] uppercase tracking-wider text-muted-foreground font-moms">Letters</span>
-                                </FormLabel>
-                              </FormItem>
-                            ))}
-                          </RadioGroup>
-                        </FormControl>
-                      </FormItem>
-                    )}
-                  />
+                <form onSubmit={form.handleSubmit(handleStartGame)} id="settings-form" className="space-y-5">
 
-                  <FormField
-                    control={form.control}
-                    name="matchTime"
-                    render={({ field }) => (
-                      <FormItem className="space-y-1.5 md:space-y-2">
-                        <FormLabel className="flex items-center text-sm md:text-base font-bold"><Hourglass className="mr-1.5 h-3.5 w-3.5 md:mr-2 md:h-4 md:w-4" /> Match Time</FormLabel>
-                        <FormControl>
-                          <RadioGroup
-                            onValueChange={field.onChange}
-                            defaultValue={field.value}
-                            className="grid grid-cols-3 gap-2"
-                          >
-                            {[
-                              { val: 'unlimited', label: '∞', sub: 'No Limit' },
-                              { val: '3', label: '3:00', sub: 'Minutes' },
-                              { val: '5', label: '5:00', sub: 'Minutes' }
-                            ].map((opt) => (
-                              <FormItem key={opt.val} className="space-y-0">
-                                <FormControl>
-                                  <RadioGroupItem value={opt.val} id={`m-${opt.val}`} className="sr-only" />
-                                </FormControl>
-                                <FormLabel
-                                  htmlFor={`m-${opt.val}`}
-                                  className={cn(
-                                    "flex flex-col items-center justify-center p-1.5 md:p-2 rounded-lg border-2 cursor-pointer transition-all duration-200 hover:scale-105",
-                                    field.value === opt.val
-                                      ? cn(
-                                        "font-bold shadow-sm",
-                                        gameType === 'solo'
-                                          ? "border-orange-500 bg-orange-500/10 text-orange-600 dark:text-orange-400"
-                                          : "border-emerald-500 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                                      )
-                                      : "border-muted bg-background/50 hover:border-primary/50"
-                                  )}
-                                >
-                                  <span className="text-sm md:text-base font-bold font-moms">{opt.label}</span>
-                                  <span className="text-[0.55rem] md:text-[0.6rem] uppercase tracking-wider text-muted-foreground font-moms">{opt.sub}</span>
-                                </FormLabel>
-                              </FormItem>
-                            ))}
-                          </RadioGroup>
-                        </FormControl>
-                      </FormItem>
-                    )}
-                  />
-
+                  {/* Multiplayer Mode Toggle - Top Level */}
                   {gameType === 'multiplayer' && (
-                    <>
-                      <Separator className="my-2" />
+                    <SettingsSegmentedControl
+                      gameType={gameType}
+                      value={multiplayerMode}
+                      onChange={(val) => handleMultiplayerClick(val)}
+                      options={[
+                        { value: 'pvp', label: <div className="flex items-center gap-2"><Swords className="h-4 w-4" /> PvP</div> },
+                        { value: 'co-op', label: <div className="flex items-center gap-2"><Handshake className="h-4 w-4" /> Co-op</div> },
+                      ]}
+                    />
+                  )}
 
+                  {/* Game Rules Section */}
+                  <div className="space-y-3">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground/80 ml-1">Game Rules</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+
+                      {/* Word Length */}
                       <FormField
                         control={form.control}
-                        name="visibility"
+                        name="wordLength"
                         render={({ field }) => (
-                          <FormItem className="space-y-1.5 md:space-y-2">
-                            <FormLabel className="flex items-center text-sm md:text-base font-bold">
-                              <Lock className="mr-1.5 h-3.5 w-3.5 md:mr-2 md:h-4 md:w-4" /> Lobby visibility
+                          <FormItem className="space-y-1.5">
+                            <FormLabel className="text-xs font-semibold flex items-center gap-1.5 text-foreground/80">
+                              <Gamepad2 className="h-3.5 w-3.5" /> Word Length
                             </FormLabel>
                             <FormControl>
-                              <RadioGroup
-                                onValueChange={field.onChange}
+                              <SettingsSegmentedControl
+                                gameType={gameType}
                                 value={field.value}
-                                className="grid grid-cols-2 gap-2"
-                              >
-                                <FormItem className="space-y-0">
-                                  <FormControl>
-                                    <RadioGroupItem value="public" id="vis-public" className="sr-only" />
-                                  </FormControl>
-                                  <FormLabel
-                                    htmlFor="vis-public"
-                                    className={cn(
-                                      'flex flex-col gap-0.5 md:gap-1 rounded-xl border-2 border-muted bg-background/40 px-2.5 py-2 md:px-3 md:py-2 text-left text-sm font-semibold transition hover:border-primary/70 h-full',
-                                      field.value === 'public' && "border-emerald-500 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                                    )}
-                                  >
-                                    <span className="flex items-center gap-1.5 text-xs md:text-sm">
-                                      <Unlock className="h-3 w-3" /> Public
-                                    </span>
-                                    <span className="text-[0.6rem] md:text-[0.65rem] font-normal text-muted-foreground leading-tight">
-                                      Listed in lobby browser with instant joins.
-                                    </span>
-                                  </FormLabel>
-                                </FormItem>
-                                <FormItem className="space-y-0">
-                                  <FormControl>
-                                    <RadioGroupItem value="private" id="vis-private" className="sr-only" />
-                                  </FormControl>
-                                  <FormLabel
-                                    htmlFor="vis-private"
-                                    className={cn(
-                                      'flex flex-col gap-0.5 md:gap-1 rounded-xl border-2 border-muted bg-background/40 px-2.5 py-2 md:px-3 md:py-2 text-left text-sm font-semibold transition hover:border-primary/70 h-full',
-                                      field.value === 'private' && "border-emerald-500 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                                    )}
-                                  >
-                                    <span className="flex items-center gap-1.5 text-xs md:text-sm">
-                                      <Lock className="h-3 w-3" /> Private
-                                    </span>
-                                    <span className="text-[0.6rem] md:text-[0.65rem] font-normal text-muted-foreground leading-tight">
-                                      Hidden in browse list. Share passcode manually.
-                                    </span>
-                                  </FormLabel>
-                                </FormItem>
-                              </RadioGroup>
+                                onChange={field.onChange}
+                                options={[
+                                  { value: 4, label: '4' },
+                                  { value: 5, label: '5' },
+                                  { value: 6, label: '6' },
+                                ]}
+                              />
                             </FormControl>
-                            <FormMessage />
                           </FormItem>
                         )}
                       />
 
-                      {visibilityValue === 'private' && (
+                      {/* Rounds - Multiplayer PvP Only */}
+                      {gameType === 'multiplayer' && multiplayerMode === 'pvp' && (
                         <FormField
                           control={form.control}
-                          name="passcode"
+                          name="roundsSetting"
                           render={({ field }) => (
-                            <FormItem>
-                              <FormLabel className="flex items-center text-sm md:text-base font-bold">
-                                <Lock className="mr-1.5 h-3.5 w-3.5 md:mr-2 md:h-4 md:w-4" /> Passcode
+                            <FormItem className="space-y-1.5">
+                              <FormLabel className="text-xs font-semibold flex items-center gap-1.5 text-foreground/80">
+                                <Swords className="h-3.5 w-3.5" /> Rounds
                               </FormLabel>
                               <FormControl>
-                                <Input
-                                  {...field}
-                                  type="password"
-                                  placeholder="Enter a secret phrase"
-                                  className="rounded-xl border border-muted bg-background/40 px-3 py-1.5 md:py-2 text-xs md:text-sm h-9 md:h-10 focus-visible:ring-emerald-500"
+                                <SettingsSegmentedControl
+                                  gameType={gameType}
+                                  value={Number(field.value)}
+                                  onChange={field.onChange}
+                                  options={[
+                                    { value: 1, label: '1' },
+                                    { value: 3, label: '3' },
+                                    { value: 5, label: '5' },
+                                  ]}
                                 />
                               </FormControl>
-                              <FormMessage />
                             </FormItem>
                           )}
                         />
                       )}
 
+                      {/* Match Time */}
                       <FormField
                         control={form.control}
-                        name="turnTime"
+                        name="matchTime"
                         render={({ field }) => (
-                          <FormItem className="space-y-1.5 md:space-y-2">
-                            <FormLabel className="flex items-center text-sm md:text-base font-bold"><Hourglass className="mr-1.5 h-3.5 w-3.5 md:mr-2 md:h-4 md:w-4" /> Turn Time</FormLabel>
+                          <FormItem className="space-y-1.5">
+                            <FormLabel className="text-xs font-semibold flex items-center gap-1.5 text-foreground/80">
+                              <Hourglass className="h-3.5 w-3.5" /> Match Time
+                            </FormLabel>
                             <FormControl>
-                              <RadioGroup
-                                onValueChange={field.onChange}
-                                defaultValue={field.value}
-                                className="grid grid-cols-3 gap-2"
-                              >
-                                {[
-                                  { val: 'unlimited', label: '∞', sub: 'No Limit' },
-                                  { val: '30', label: '30', sub: 'Seconds' },
-                                  { val: '60', label: '60', sub: 'Seconds' }
-                                ].map((opt) => (
-                                  <FormItem key={opt.val} className="space-y-0">
-                                    <FormControl>
-                                      <RadioGroupItem value={opt.val} id={`t-${opt.val}`} className="sr-only" />
-                                    </FormControl>
-                                    <FormLabel
-                                      htmlFor={`t-${opt.val}`}
-                                      className={cn(
-                                        "flex flex-col items-center justify-center p-1.5 md:p-2 rounded-lg border-2 cursor-pointer transition-all duration-200 hover:scale-105",
-                                        field.value === opt.val
-                                          ? "border-emerald-500 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-bold shadow-sm"
-                                          : "border-muted bg-background/50 hover:border-primary/50"
-                                      )}
-                                    >
-                                      <span className="text-sm md:text-base font-bold font-moms">{opt.label}</span>
-                                      <span className="text-[0.55rem] md:text-[0.6rem] uppercase tracking-wider text-muted-foreground font-moms">{opt.sub}</span>
-                                    </FormLabel>
-                                  </FormItem>
-                                ))}
-                              </RadioGroup>
+                              <SettingsSegmentedControl
+                                gameType={gameType}
+                                value={field.value}
+                                onChange={field.onChange}
+                                options={[
+                                  { value: 'unlimited', label: '∞' },
+                                  { value: '3', label: '3m' },
+                                  { value: '5', label: '5m' }
+                                ]}
+                              />
                             </FormControl>
                           </FormItem>
                         )}
                       />
 
-                      <Separator className="my-2" />
-                      <div className="space-y-1.5 md:space-y-2">
-                        <FormLabel className="text-sm md:text-base font-bold">Multiplayer Mode</FormLabel>
-                        <div className="grid grid-cols-2 gap-2 md:gap-3">
-                          <button
-                            type="button"
-                            onClick={() => handleMultiplayerClick('pvp')}
-                            className={cn(
-                              "relative flex flex-col items-center justify-center gap-1 rounded-xl border-2 p-2 md:p-3 transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]",
-                              multiplayerMode === 'pvp'
-                                ? "border-emerald-500 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 shadow-sm"
-                                : "border-muted bg-background/50 text-muted-foreground hover:border-emerald-500/50 hover:text-emerald-600/80"
-                            )}
-                          >
-                            <Swords className={cn("h-5 w-5 md:h-6 md:w-6", multiplayerMode === 'pvp' ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground")} />
-                            <span className="text-sm md:text-base font-bold font-moms">PvP</span>
-                          </button>
+                      {/* Turn Time - Multiplayer Only */}
+                      {gameType === 'multiplayer' && (
+                        <FormField
+                          control={form.control}
+                          name="turnTime"
+                          render={({ field }) => (
+                            <FormItem className="space-y-1.5">
+                              <FormLabel className="text-xs font-semibold flex items-center gap-1.5 text-foreground/80">
+                                <Hourglass className="h-3.5 w-3.5" /> Turn Limit
+                              </FormLabel>
+                              <FormControl>
+                                <SettingsSegmentedControl
+                                  gameType={gameType}
+                                  value={field.value}
+                                  onChange={field.onChange}
+                                  options={[
+                                    { value: 'unlimited', label: '∞' },
+                                    { value: '30', label: '30s' },
+                                    { value: '60', label: '60s' }
+                                  ]}
+                                />
+                              </FormControl>
+                            </FormItem>
+                          )}
+                        />
+                      )}
+                    </div>
+                  </div>
 
-                          <button
-                            type="button"
-                            onClick={() => handleMultiplayerClick('co-op')}
-                            className={cn(
-                              "relative flex flex-col items-center justify-center gap-1 rounded-xl border-2 p-2 md:p-3 transition-all duration-200 hover:scale-[1.02] active:scale-[0.98]",
-                              multiplayerMode === 'co-op'
-                                ? "border-emerald-500 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 shadow-sm"
-                                : "border-muted bg-background/50 text-muted-foreground hover:border-emerald-500/50 hover:text-emerald-600/80"
+                  {/* Lobby Settings - Multiplayer Only */}
+                  {gameType === 'multiplayer' && (
+                    <div className="space-y-3">
+                      <Separator className="bg-black/5 dark:bg-white/10" />
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-muted-foreground/80 ml-1">Lobby Settings</h3>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <FormField
+                          control={form.control}
+                          name="visibility"
+                          render={({ field }) => (
+                            <FormItem className="space-y-1.5">
+                              <FormLabel className="text-xs font-semibold flex items-center gap-1.5 text-foreground/80">
+                                <Lock className="h-3.5 w-3.5" /> Visibility
+                              </FormLabel>
+                              <FormControl>
+                                <SettingsSegmentedControl
+                                  gameType={gameType}
+                                  value={field.value}
+                                  onChange={field.onChange}
+                                  options={[
+                                    { value: 'public', label: 'PUBLIC' },
+                                    { value: 'private', label: 'PRIVATE' },
+                                  ]}
+                                />
+                              </FormControl>
+                            </FormItem>
+                          )}
+                        />
+
+                        {/* Passcode - conditional */}
+                        {visibilityValue === 'private' && (
+                          <FormField
+                            control={form.control}
+                            name="passcode"
+                            render={({ field }) => (
+                              <FormItem className="space-y-1.5">
+                                <FormLabel className="text-xs font-semibold flex items-center gap-1.5 text-foreground/80">
+                                  <Lock className="h-3.5 w-3.5" /> Passcode
+                                </FormLabel>
+                                <FormControl>
+                                  <Input
+                                    {...field}
+                                    type="password"
+                                    placeholder="Secret phrase..."
+                                    className="h-[38px] rounded-xl bg-neutral-100/50 dark:bg-neutral-900/30 border-black/5 dark:border-white/5 focus-visible:ring-emerald-500 font-moms text-sm"
+                                  />
+                                </FormControl>
+                              </FormItem>
                             )}
-                          >
-                            <Handshake className={cn("h-5 w-5 md:h-6 md:w-6", multiplayerMode === 'co-op' ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground")} />
-                            <span className="text-sm md:text-base font-bold font-moms">Co-op</span>
-                          </button>
-                        </div>
-                        <FormMessage />
+                          />
+                        )}
                       </div>
-                    </>
+                    </div>
                   )}
+
                 </form>
               </Form>
             </div>
 
-            <DialogFooter className="p-3 md:p-4 pt-2 shrink-0">
+            <DialogFooter className="p-4 pt-2 shrink-0">
               <Button
                 type="submit"
                 form="settings-form"
                 size="lg"
                 className={cn(
-                  "w-full h-10 md:h-12 text-base md:text-lg font-bold font-moms uppercase tracking-widest shadow-lg transition-all hover:scale-[1.02] active:scale-[0.98]",
+                  "w-full h-11 text-base font-bold font-moms uppercase tracking-widest shadow-lg transition-all hover:scale-[1.02] active:scale-[0.98] rounded-xl",
                   gameType === 'solo'
-                    ? "bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white"
-                    : "bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white"
+                    ? "bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white shadow-orange-500/20"
+                    : "bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white shadow-emerald-500/20"
                 )}
                 disabled={isSubmitting || !isAuthReady}
               >
-                {!isAuthReady ? 'Connecting…' : isSubmitting ? 'Starting...' : inviteFriendId ? 'Start Game and Invite' : 'Start Game'}
+                {!isAuthReady ? 'Connecting…' : isSubmitting ? 'Starting...' : inviteFriendId ? 'Start & Invite' : 'Start Game'}
               </Button>
             </DialogFooter>
           </DialogContent >

@@ -15,7 +15,12 @@ import {
   signInAnonymously,
   signInWithEmailAndPassword,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
+  type User,
 } from 'firebase/auth';
+
+import { useIsMobile } from '@/hooks/use-mobile';
 
 import { useFirebase } from '@/components/firebase-provider';
 import { Button } from '@/components/ui/button';
@@ -183,6 +188,7 @@ export default function LoginPage() {
   const [pendingProvider, setPendingProvider] = useState<AuthProviderType>('google');
   const [pendingMeta, setPendingMeta] = useState<{ email?: string | null; photoURL?: string | null }>({});
   const [activeTab, setActiveTab] = useState<TabKey>('signin');
+  const isMobile = useIsMobile();
 
   const copy = COPY;
   const tabOrder: TabKey[] = ['signin', 'signup', 'guest'];
@@ -273,6 +279,43 @@ export default function LoginPage() {
     }
   };
 
+  const handleAuthSuccess = async (user: User) => {
+    if (!db) return;
+    try {
+      const doc = await fetchProfile(db, user.uid);
+      if (!doc?.username) {
+        setPendingProvider('google');
+        setPendingMeta({ email: user.email, photoURL: user.photoURL });
+        setUsernameDialogOpen(true);
+      } else {
+        toast(copy.toasts.welcomeBack(doc.username));
+      }
+    } catch (error) {
+      console.error('Profile fetch failed', error);
+      setAuthFeedback('Failed to load your profile.');
+    }
+  };
+
+  useEffect(() => {
+    if (!auth || !db) return;
+
+    // Check for redirect result
+    getRedirectResult(auth)
+      .then((result) => {
+        if (result) {
+          handleAuthSuccess(result.user);
+        }
+      })
+      .catch((error) => {
+        console.error('Redirect auth failed', error);
+        const message =
+          error instanceof FirebaseError
+            ? authMessage(error)
+            : 'We could not sign you in with Google.';
+        setAuthFeedback(message);
+      });
+  }, [auth, db]);
+
   const handleGoogleLogin = async () => {
     if (!auth || !db) return;
     setGoogleLoading(true);
@@ -280,15 +323,14 @@ export default function LoginPage() {
     try {
       const provider = new GoogleAuthProvider();
       provider.setCustomParameters({ prompt: 'select_account' });
-      const credential = await signInWithPopup(auth, provider);
-      const doc = await fetchProfile(db, credential.user.uid);
-      if (!doc?.username) {
-        setPendingProvider('google');
-        setPendingMeta({ email: credential.user.email, photoURL: credential.user.photoURL });
-        setUsernameDialogOpen(true);
-      } else {
-        toast(copy.toasts.welcomeBack(doc.username));
+
+      if (isMobile) {
+        await signInWithRedirect(auth, provider);
+        return; // Redirecting...
       }
+
+      const credential = await signInWithPopup(auth, provider);
+      await handleAuthSuccess(credential.user);
     } catch (error) {
       console.error('Google auth failed', error);
       const message =

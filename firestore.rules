@@ -19,27 +19,20 @@ service cloud.firestore {
     }
 
     match /games/{gameId} {
-      // Διατηρούμε τον υπάρχοντα κανόνα σου
       allow read, write: if isAuthenticated(); 
     }
 
     // --- New Chat Rules (Live Chat Support) ---
     match /chats/{chatId} {
-      // Επιτρέπει την ανάγνωση και ενημέρωση (π.χ. read receipts) αν ο χρήστης είναι μέλος
       allow read, update: if isAuthenticated() && request.auth.uid in resource.data.memberIds;
       
       match /messages/{messageId} {
-        // Allow reading messages if user is authenticated - membership check happens at parent level
-        // The client should only query messages under chats they have access to
         allow read: if isAuthenticated();
-        // Επιτρέπει τη δημιουργία μηνύματος (αν χρειαστεί client-side send στο μέλλον)
         allow create: if isChatMember(chatId) && request.resource.data.senderId == request.auth.uid;
       }
 
       match /typing/{userId} {
         allow read: if isChatMember(chatId);
-        // Relaxed write rule to avoid potential issues with isChatMember() get() call during writes
-        // We trust the client to only write to valid chats, and the path ensures they can only write their own status.
         allow write: if isAuthenticated() && request.auth.uid == userId;
       }
     }
@@ -54,11 +47,6 @@ service cloud.firestore {
     match /notifications/{notificationId} {
       allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
       allow write: if false; // Managed by server
-    }
-
-    // --- Session Locks (for online players count) ---
-    match /sessionLocks/{lockId} {
-      allow read, write: if isAuthenticated();
     }
   }
 }

@@ -6,25 +6,25 @@ import { useTheme } from 'next-themes';
 
 const greetings = [
   'Here we go again!',
-  'Show off your brain!', // Shortened
-  'Let the games begin!', // Shortened
-  'Guess some letters!', // Shortened
+  'Show off your brain!',
+  'Let the games begin!',
+  'Guess some letters!',
   'Another day, another puzzle!',
-  'Brought your dictionary?', // Shortened
+  'Brought your dictionary?',
   "Let's see what you've got!",
   'Get ready to feel smart!',
-  'May your guesses be wise!', // Shortened
+  'May your guesses be wise!',
   "It's word-guessing o'clock!",
   'Unlock your inner wordsmith!',
   'Your daily dose of wordy fun!',
-  'Test your vocabulary!', // Shortened
+  'Test your vocabulary!',
   'A wild puzzle has appeared!',
   'Go on, solve it, I dare you!',
   'This one might be tricky!',
   'Prepare for a wordy showdown!',
   'The challenge awaits!',
   'Think you can crack this one?',
-  'Flex those brain muscles!', // Shortened
+  'Flex those brain muscles!',
 ];
 
 const sentenceVariants = {
@@ -58,7 +58,6 @@ export default function GreetingChanger() {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [currentGreeting, setCurrentGreeting] = useState(greetings[0]);
   const { resolvedTheme } = useTheme();
-  const isLightMode = resolvedTheme === 'light';
 
   const changeGreeting = useCallback(() => {
     setCurrentIndex((prevIndex) => {
@@ -81,8 +80,7 @@ export default function GreetingChanger() {
       <AnimatePresence mode="wait">
         <motion.h2
           key={currentIndex}
-          className={`font-comic text-xl md:text-2xl font-semibold tracking-wider whitespace-nowrap ${isLightMode ? 'text-emerald-600' : 'text-primary'
-            }`}
+          className="font-comic text-xl md:text-2xl font-semibold tracking-wider whitespace-nowrap text-[#F7931E]"
           variants={sentenceVariants}
           initial="hidden"
           animate="visible"
@@ -109,16 +107,10 @@ export default function GreetingChanger() {
             (_, index) => `
           @keyframes glow-${index} {
             0% {
-              text-shadow: ${isLightMode
-                ? '0 0 0px rgba(5, 150, 105, 0)'
-                : '0 0 0px rgba(255, 122, 24, 0)'
-              };
+              text-shadow: 0 0 0px rgba(255, 122, 24, 0);
             }
             100% {
-              text-shadow: ${isLightMode
-                ? '0 0 10px rgba(5, 150, 105, 0.5), 0 0 20px rgba(5, 150, 105, 0.3), 0 0 30px rgba(5, 150, 105, 0.2)'
-                : '0 0 12px rgba(255, 122, 24, 0.6), 0 0 24px rgba(255, 122, 24, 0.4), 0 0 36px rgba(255, 122, 24, 0.2)'
-              };
+              text-shadow: 0 0 12px rgba(255, 122, 24, 0.6), 0 0 24px rgba(255, 122, 24, 0.4), 0 0 36px rgba(255, 122, 24, 0.2);
             }
           }
         `

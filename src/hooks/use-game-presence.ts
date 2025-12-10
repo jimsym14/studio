@@ -1,3 +1,5 @@
+'use client';
+
 import { useEffect, useState } from 'react';
 import { ref, onValue, set, onDisconnect, serverTimestamp, remove } from 'firebase/database';
 import { useFirebase } from '@/components/firebase-provider';

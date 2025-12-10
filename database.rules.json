@@ -1,0 +1,16 @@
+{
+    "rules": {
+        "games": {
+            "$gameId": {
+                "presence": {
+                    ".read": "auth != null",
+                    ".write": "auth != null"
+                },
+                "typing": {
+                    ".read": "auth != null",
+                    ".write": "auth != null"
+                }
+            }
+        }
+    }
+}

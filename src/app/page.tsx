@@ -268,7 +268,7 @@ export default function Home() {
         transition={{ duration: 0.35 }}
         className={cn(
           'neu-shell relative z-10 mt-8 w-full max-w-4xl overflow-hidden rounded-[32px] p-5 backdrop-blur-xl sm:mt-10 sm:rounded-[36px] sm:p-10',
-          isLightMode ? ' text-slate-900 transition-[background] duration-700 ease-out' : 'text-white'
+          isLightMode ? 'bg-[#FDE8D7] text-slate-900 transition-[background] duration-700 ease-out' : 'text-white'
         )}
       >
         <div className="pointer-events-none absolute inset-0 rounded-[36px] border border-white/5" />
@@ -284,7 +284,7 @@ export default function Home() {
               className={cn(
                 'flex w-full items-center gap-3 rounded-[28px] px-4 py-3 text-sm transition-colors duration-300 sm:gap-5 backdrop-blur-xl',
                 isLightMode
-                  ? 'glass-panel-strong text-slate-900'
+                  ? 'bg-[#FFFBF7] shadow-[0_4px_12px_rgba(0,0,0,0.08)] text-slate-900'
                   : 'border border-white/15 bg-black/25 text-white shadow-[inset_6px_6px_18px_rgba(0,0,0,0.5),inset_-4px_-4px_12px_rgba(255,255,255,0.05)]'
               )}
             >
@@ -351,7 +351,7 @@ export default function Home() {
             <div
               className={cn(
                 'lg:hidden rounded-[32px] p-4',
-                isLightMode ? 'glass-panel-soft text-slate-900' : 'neu-card'
+                isLightMode ? 'bg-[#FFFBF7] shadow-[0_4px_12px_rgba(0,0,0,0.08)] text-slate-900' : 'neu-card'
               )}
             >
               <p className="text-center text-xs font-semibold uppercase tracking-[0.5em] text-muted-foreground">Modes</p>
@@ -372,7 +372,7 @@ export default function Home() {
                   key={stat.label}
                   className={cn(
                     'rounded-2xl p-4',
-                    isLightMode ? 'glass-panel-soft text-slate-900' : 'neu-card sunset-card'
+                    isLightMode ? 'bg-white shadow-[0_4px_12px_rgba(0,0,0,0.08)] text-slate-900' : 'neu-card sunset-card'
                   )}
                 >
                   <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">{stat.label}</p>
@@ -397,7 +397,7 @@ export default function Home() {
                   key={finder.label}
                   className={cn(
                     'rounded-2xl p-4',
-                    isLightMode ? 'glass-panel-soft text-slate-900' : 'neu-card sunset-card'
+                    isLightMode ? 'bg-white shadow-[0_4px_12px_rgba(0,0,0,0.08)] text-slate-900' : 'neu-card sunset-card'
                   )}
                 >
                   <p className="flex items-center gap-2 text-xs uppercase tracking-[0.3em] text-muted-foreground">
