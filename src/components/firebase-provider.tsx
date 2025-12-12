@@ -81,7 +81,7 @@ interface FirebaseContextType {
   savePreferences: (prefs: Partial<UserPreferences>) => Promise<void>;
   sessionStatus: SessionStatus;
   sessionConflict: SessionLockDoc | null;
-  retrySessionClaim: () => void;
+  retrySessionClaim: (force?: boolean) => void;
   sessionLocksEnabled: boolean;
 }
 
@@ -131,12 +131,15 @@ export function FirebaseProvider({ children }: { children: ReactNode }) {
     }
   }, [db, stopHeartbeat]);
 
-  const retrySessionClaim = useCallback(() => {
+  const [nextClaimForced, setNextClaimForced] = useState(false);
+
+  const retrySessionClaim = useCallback((force = false) => {
     if (typeof window !== 'undefined') {
       window.localStorage.removeItem(SESSION_LOCKS_STORAGE_KEY);
     }
     sessionDisableToastShownRef.current = false;
     setSessionLocksDisabled(false);
+    setNextClaimForced(force);
     setSessionAttempt((attempt) => attempt + 1);
   }, []);
 
@@ -216,7 +219,7 @@ export function FirebaseProvider({ children }: { children: ReactNode }) {
       ? { deviceLabel: 'unknown', origin: undefined }
       : { deviceLabel: navigator.userAgent.slice(0, 180), origin: window.location.origin };
 
-    claimSessionLock(db, user.uid, sessionId, metadata)
+    claimSessionLock(db, user.uid, sessionId, metadata, nextClaimForced)
       .then((result) => {
         if (cancelled) return;
         if (result.status === 'granted') {
@@ -286,7 +289,7 @@ export function FirebaseProvider({ children }: { children: ReactNode }) {
       cancelled = true;
       releaseSessionLockIfNeeded();
     };
-  }, [auth, db, releaseSessionLockIfNeeded, sessionAttempt, sessionLocksDisabled, sessionLocksPrefReady, stopHeartbeat, user]);
+  }, [auth, db, nextClaimForced, releaseSessionLockIfNeeded, sessionAttempt, sessionLocksDisabled, sessionLocksPrefReady, stopHeartbeat, user]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;

@@ -21,6 +21,16 @@ export interface UserProfile {
   preferences?: UserPreferences;
   createdAt?: Timestamp | FieldValue;
   updatedAt?: Timestamp | FieldValue;
+  daily?: {
+    lastSolvedDate: string; // ISO Date YYYY-MM-DD
+    streak: number;
+    maxStreak: number;
+    history: Record<string, { word: string; guesses: number; result: 'won' | 'lost' }>;
+    gameState?: {
+      date: string;
+      guesses: { word: string; evaluations: (string | null)[] }[];
+    };
+  };
 }
 
 export const DEFAULT_PREFERENCES: UserPreferences = {

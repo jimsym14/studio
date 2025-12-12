@@ -3,7 +3,7 @@
 import { useMemo, useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useTheme } from 'next-themes';
-import { Compass, Crown, User, UserPlus, Users } from 'lucide-react';
+import { Compass, Crown, User, UserPlus, Users, Newspaper } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 import { Logo } from '@/components/logo';
@@ -21,12 +21,16 @@ import { useOnlinePlayers } from '@/hooks/use-online-players';
 import { useFriendsModal } from '@/components/friends-modal-provider';
 import { useOverviewStats, type LeaderboardStat } from '@/hooks/use-overview-stats';
 import { LobbyInviteToast } from '@/components/lobby-invite-toast';
+import { DailyNewspaperModal } from '@/components/daily/daily-newspaper-modal';
+import { useDailyStats } from '@/hooks/use-daily-stats';
+import type { GameType } from '@/types/game';
 
-type GameType = 'solo' | 'multiplayer';
+type PageMode = GameType | 'daily';
 
 export default function Home() {
   const router = useRouter();
   const { profile, user } = useFirebase();
+  const [showDailyModal, setShowDailyModal] = useState(false);
   const [modalState, setModalState] = useState<{
     isOpen: boolean;
     gameType: GameType | null;
@@ -35,7 +39,7 @@ export default function Home() {
     prefilledPasscode?: string;
   }>({ isOpen: false, gameType: null });
 
-  const [activeMode, setActiveMode] = useState<GameType>('solo');
+  const [activeMode, setActiveMode] = useState<PageMode>('solo');
   const isMobile = useIsMobile();
   const guest = profile ? isGuestProfile(profile) : false;
   const signedIn = Boolean(user);
@@ -65,7 +69,7 @@ export default function Home() {
   }, [setOnOpenInviteSettings]);
 
   const modeConfig: Record<
-    GameType,
+    PageMode,
     {
       title: string;
       subtitle: string;
@@ -95,6 +99,15 @@ export default function Home() {
       gradient: 'linear-gradient(140deg, #658F41 0%, #76B66B 55%, #55A05E 100%)',
       icon: Users,
       perks: ['Co-op & PvP', 'Custom timers', 'Word size control'],
+    },
+    daily: {
+      title: 'Daily Word',
+      subtitle: 'Global Event',
+      description: 'One word, one world. Join the daily ritual and compete with everyone.',
+      vibe: 'Daily Ritual + Global Stats',
+      gradient: 'linear-gradient(135deg, #FDE047 0%, #FACC15 50%, #EAB308 100%)',
+      icon: Newspaper,
+      perks: ['Streaks', 'Global Stats', 'Newspaper'],
     },
   };
 
@@ -156,7 +169,21 @@ export default function Home() {
     [overviewStats]
   );
 
-  const handleOpenModal = (type: GameType) => {
+  const { streak, maxStreak, history: dailyHistory } = useDailyStats(profile);
+  const solvedCount = dailyHistory ? Object.values(dailyHistory).filter(d => d.result === 'won').length : 0;
+
+  const dailyStatsList = useMemo(() => ([
+    { label: 'Current Streak', value: streak },
+    { label: 'Best Streak', value: maxStreak },
+    { label: 'Solved', value: solvedCount },
+  ]), [streak, maxStreak, solvedCount]);
+
+  const handleOpenModal = (type: PageMode) => {
+    if (type === 'daily') {
+      setShowDailyModal(true);
+      setActiveMode('daily');
+      return;
+    }
     setModalState({ isOpen: true, gameType: type });
     setActiveMode(type);
   };
@@ -188,68 +215,110 @@ export default function Home() {
 
   const modesList = (
     <div className="flex flex-col gap-4 sm:gap-5">
-      {(Object.entries(modeConfig) as [GameType, (typeof modeConfig)['solo']][]).map(([type, config]) => {
-        const Icon = config.icon;
-        const isActive = activeMode === type;
-        const isVisuallyActive = isMobile || isActive;
-        return (
-          <motion.button
-            key={type}
-            type="button"
-            onClick={() => handleOpenModal(type)}
-            onMouseEnter={() => setActiveMode(type)}
-            onFocus={() => setActiveMode(type)}
-            aria-pressed={isActive}
-            style={{ background: isVisuallyActive ? config.gradient : undefined }}
-            className={cn(
-              'mode-card group relative w-full overflow-hidden rounded-[28px] border p-5 text-left transition duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-background',
-              isVisuallyActive
-                ? 'border-white/70 text-white shadow-[0_30px_90px_rgba(0,0,0,0.25)]'
-                : 'neu-card text-foreground dark:bg-card/70 dark:text-foreground/90'
-            )}
-          >
-            <div className="flex items-center justify-between gap-4">
-              <span className="rounded-full bg-white/70 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-foreground/80 dark:bg-black/20 dark:text-white/80 sm:tracking-[0.3em]">
-                {config.subtitle}
-              </span>
-            </div>
-            <h3 className="mt-4 flex items-center gap-3 text-2xl font-black uppercase tracking-[0.15em] sm:tracking-[0.25em]">
-              <Icon className="h-6 w-6" />
-              {config.title}
-            </h3>
-            <div
+      {(Object.entries(modeConfig) as [GameType, (typeof modeConfig)['solo']][])
+        .filter(([type]) => type !== 'daily')
+        .map(([type, config]) => {
+          const Icon = config.icon;
+          const isActive = activeMode === type;
+          const isVisuallyActive = isMobile || isActive;
+          return (
+            <motion.button
+              key={type}
+              type="button"
+              onClick={() => handleOpenModal(type)}
+              onMouseEnter={() => setActiveMode(type)}
+              onFocus={() => setActiveMode(type)}
+              aria-pressed={isActive}
+              style={{ background: isVisuallyActive ? config.gradient : undefined }}
               className={cn(
-                'play-pill mt-4 flex items-center justify-between rounded-full border px-4 py-2 text-[0.65rem] font-semibold uppercase tracking-[0.2em] shadow-sm transition-colors sm:text-sm sm:tracking-[0.3em]',
+                'mode-card group relative w-full overflow-hidden rounded-[28px] border p-5 text-left transition duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-background',
                 isVisuallyActive
-                  ? 'border-white/70 bg-white/10 text-white'
-                  : isLightMode
-                    ? 'border-white/70 bg-gradient-to-r from-white/95 via-white/80 to-white/65 text-slate-900/80 shadow-[0_18px_45px_rgba(15,23,42,0.12)]'
-                    : 'border-foreground/30 bg-foreground/10 text-foreground/80'
+                  ? 'border-white/70 text-white shadow-[0_30px_90px_rgba(0,0,0,0.25)]'
+                  : 'neu-card text-foreground dark:bg-card/70 dark:text-foreground/90'
               )}
             >
-              <span className="relative z-10">Play now</span>
-              <motion.span
+              <div className="flex items-center justify-between gap-4">
+                <span className="rounded-full bg-white/70 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-foreground/80 dark:bg-black/20 dark:text-white/80 sm:tracking-[0.3em]">
+                  {config.subtitle}
+                </span>
+              </div>
+              <h3 className="mt-4 flex items-center gap-3 text-2xl font-black uppercase tracking-[0.15em] sm:tracking-[0.25em]">
+                <Icon className="h-6 w-6" />
+                {config.title}
+              </h3>
+              <div
                 className={cn(
-                  'relative z-10 inline-flex h-8 w-8 items-center justify-center rounded-full border border-transparent transition-colors',
-                  isActive
-                    ? 'bg-white/20 text-white'
+                  'play-pill mt-4 flex items-center justify-between rounded-full border px-4 py-2 text-[0.65rem] font-semibold uppercase tracking-[0.2em] shadow-sm transition-colors sm:text-sm sm:tracking-[0.3em]',
+                  isVisuallyActive
+                    ? 'border-white/70 bg-white/10 text-white'
                     : isLightMode
-                      ? 'border-white/80 bg-white text-slate-900 shadow-[0_8px_20px_rgba(15,23,42,0.18)]'
-                      : 'bg-foreground/5 text-foreground'
+                      ? 'border-white/70 bg-gradient-to-r from-white/95 via-white/80 to-white/65 text-slate-900/80 shadow-[0_18px_45px_rgba(15,23,42,0.12)]'
+                      : 'border-foreground/30 bg-foreground/10 text-foreground/80'
                 )}
-                animate={{ x: isActive ? 6 : 0 }}
               >
-                →
-              </motion.span>
-            </div>
-          </motion.button>
-        );
-      })}
+                <span className="relative z-10">Play now</span>
+                <motion.span
+                  className={cn(
+                    'relative z-10 inline-flex h-8 w-8 items-center justify-center rounded-full border border-transparent transition-colors',
+                    isActive
+                      ? 'bg-white/20 text-white'
+                      : isLightMode
+                        ? 'border-white/80 bg-white text-slate-900 shadow-[0_8px_20px_rgba(15,23,42,0.18)]'
+                        : 'bg-foreground/5 text-foreground'
+                  )}
+                  animate={{ x: isActive ? 6 : 0 }}
+                >
+                  →
+                </motion.span>
+              </div>
+            </motion.button>
+          );
+        })}
     </div>
+  );
+
+  const dailyConfig = modeConfig['daily'];
+  const isDailyActive = activeMode === 'daily';
+  const isDailyVisuallyActive = isMobile || isDailyActive;
+
+  const dailyButton = (
+    <motion.button
+      type="button"
+      onClick={() => handleOpenModal('daily')}
+      onMouseEnter={() => setActiveMode('daily')}
+      onFocus={() => setActiveMode('daily')}
+      aria-pressed={isDailyActive}
+      style={{ background: isDailyVisuallyActive ? dailyConfig.gradient : undefined }}
+      className={cn(
+        'group relative flex w-full items-center justify-center gap-3 overflow-hidden rounded-full border px-6 py-4 text-sm font-black uppercase tracking-[0.2em] shadow-sm transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:text-base sm:tracking-[0.25em]',
+        isDailyVisuallyActive
+          ? 'border-white/70 text-black shadow-[0_30px_90px_rgba(0,0,0,0.25)]'
+          : isLightMode
+            ? 'border-white/70 bg-gradient-to-r from-white/95 via-white/80 to-white/65 text-slate-900/80 shadow-[0_18px_45px_rgba(15,23,42,0.12)]'
+            : 'border-foreground/30 bg-foreground/10 text-foreground/80'
+      )}
+    >
+      <Newspaper className="h-5 w-5 sm:h-6 sm:w-6" />
+      {dailyConfig.title}
+      <motion.span
+        className={cn(
+          'ml-2 inline-flex h-6 w-6 items-center justify-center rounded-full border border-transparent transition-colors sm:h-8 sm:w-8',
+          isDailyActive
+            ? 'bg-white/20 text-black'
+            : isLightMode
+              ? 'border-white/80 bg-white text-slate-900 shadow-[0_8px_20px_rgba(15,23,42,0.18)]'
+              : 'bg-foreground/5 text-foreground'
+        )}
+        animate={{ x: isDailyActive ? 4 : 0 }}
+      >
+        →
+      </motion.span>
+    </motion.button>
   );
 
   return (
     <div className="relative flex min-h-screen flex-col items-center justify-start overflow-hidden px-4 pt-10 pb-12 sm:px-6 sm:pt-12 animate-theme">
+      <DailyNewspaperModal manualOpen={showDailyModal} onClose={() => setShowDailyModal(false)} />
       <div className="pointer-events-none absolute inset-0 -z-10">
         <div
           className="absolute left-1/2 top-24 h-[520px] w-[520px] -translate-x-1/2 rounded-full blur-[140px]"
@@ -356,6 +425,7 @@ export default function Home() {
             >
               <p className="text-center text-xs font-semibold uppercase tracking-[0.5em] text-muted-foreground">Modes</p>
               <div className="mt-4 space-y-4">
+                <div className="mb-4">{dailyButton}</div>
                 {modesList}
                 {browseLobbiesButton}
               </div>
@@ -409,6 +479,33 @@ export default function Home() {
                 </div>
               ))}
             </div>
+
+            {/* Daily Stats Section */}
+            <div
+              className={cn(
+                'grid gap-4 rounded-3xl p-4 sm:grid-cols-3 mt-4',
+                isLightMode ? 'glass-panel-soft' : 'neu-card'
+              )}
+            >
+              <div className="col-span-full mb-2">
+                <p className="flex items-center gap-2 text-xs uppercase tracking-[0.3em] text-muted-foreground">
+                  <Newspaper className="h-4 w-4 text-[hsl(var(--primary))]" />
+                  Daily Performance
+                </p>
+              </div>
+              {dailyStatsList.map((stat) => (
+                <div
+                  key={stat.label}
+                  className={cn(
+                    'rounded-2xl p-4',
+                    isLightMode ? 'bg-white shadow-[0_4px_12px_rgba(0,0,0,0.08)] text-slate-900' : 'neu-card sunset-card'
+                  )}
+                >
+                  <p className="text-xs uppercase tracking-[0.3em] text-muted-foreground">{stat.label}</p>
+                  <p className="mt-2 text-2xl font-black tracking-tight">{stat.value}</p>
+                </div>
+              ))}
+            </div>
           </div>
 
           <div className="hidden space-y-5 lg:block">
@@ -420,6 +517,7 @@ export default function Home() {
             >
               Modes
             </p>
+            <div className="mb-4">{dailyButton}</div>
             {modesList}
             <div className="pt-2">{browseLobbiesButton}</div>
           </div>

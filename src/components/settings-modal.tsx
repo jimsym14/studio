@@ -37,12 +37,11 @@ import { socialPost } from '@/lib/social-client';
 import { useToast } from '@/hooks/use-toast';
 import { useFirebase } from '@/components/firebase-provider';
 import { cn } from '@/lib/utils';
-
-type GameType = 'solo' | 'multiplayer' | null;
+import type { GameType } from '@/types/game';
 
 interface SettingsModalProps {
   isOpen: boolean;
-  gameType: GameType;
+  gameType: GameType | null;
   onClose: () => void;
   inviteFriendId?: string;
   inviteFriendUsername?: string;

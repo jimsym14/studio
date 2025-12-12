@@ -922,7 +922,6 @@ export function FriendsModal({
         animate={{ opacity: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.95 }}
         key={friend.friendshipId}
-        key={friend.friendshipId}
         className="group relative flex items-center justify-between rounded-xl border border-black/5 dark:border-white/5 bg-black/5 dark:bg-white/5 p-1.5 md:p-2 transition-colors hover:bg-black/10 dark:hover:bg-white/10"
       >
         <div className="flex items-center gap-1.5 md:gap-2">
@@ -1145,7 +1144,7 @@ export function FriendsModal({
             CHAT VIEW (when friend chat is active)
             ======================================== */}
         {activeFriendChat ? (
-          <div className="relative flex h-[600px] w-full flex-col overflow-hidden rounded-3xl border border-border/40 bg-gradient-to-br from-emerald-500/5 via-background to-amber-500/5 shadow-2xl backdrop-blur-xl dark:border-white/10 dark:from-emerald-900/20 dark:via-black dark:to-amber-900/20">
+          <div className="relative flex h-[600px] w-full flex-col overflow-hidden rounded-3xl border border-border/40 bg-[#FFF5E1] shadow-2xl backdrop-blur-xl dark:border-white/10 dark:bg-gradient-to-br dark:from-emerald-900/20 dark:via-black dark:to-amber-900/20">
             {/* Chat Header */}
             <div className="flex items-center justify-between border-b border-border/10 px-6 py-4 dark:border-white/10">
               <div className="flex items-center gap-3">
@@ -1322,7 +1321,7 @@ export function FriendsModal({
                                   className={cn(
                                     "flex-1 py-2 text-xs font-bold font-moms uppercase tracking-widest rounded-lg transition-all",
                                     requestsSubTab === 'incoming'
-                                      ? "bg-white shadow-sm text-foreground"
+                                      ? "bg-white dark:bg-white/10 shadow-sm text-foreground dark:text-white"
                                       : "text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5"
                                   )}
                                 >
@@ -1333,7 +1332,7 @@ export function FriendsModal({
                                   className={cn(
                                     "flex-1 py-2 text-xs font-bold font-moms uppercase tracking-widest rounded-lg transition-all",
                                     requestsSubTab === 'outgoing'
-                                      ? "bg-white shadow-sm text-foreground"
+                                      ? "bg-white dark:bg-white/10 shadow-sm text-foreground dark:text-white"
                                       : "text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5"
                                   )}
                                 >

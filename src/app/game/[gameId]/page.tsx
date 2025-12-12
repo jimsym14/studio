@@ -26,6 +26,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 
 import { Button } from '@/components/ui/button';
+import { GameGrid } from '@/components/game/game-grid';
 import {
   Dialog,
   DialogContent,
@@ -52,6 +53,7 @@ import { runWithFirestoreRetry } from '@/lib/firestore-retry';
 import { useGamePresence } from '@/hooks/use-game-presence';
 import { useGameTyping } from '@/hooks/use-game-typing';
 import { Keyboard } from '@/components/keyboard';
+import { useIsMobile } from '@/hooks/use-mobile';
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -145,11 +147,7 @@ const getModeMeta = (game?: GameDocument | null) => {
   return { label: 'PvP', icon: Swords };
 };
 
-const tileTone: Record<GuessScore, string> = {
-  correct: 'border-transparent bg-[hsl(var(--accent))] text-[hsl(var(--accent-foreground))] shadow-[0_18px_45px_rgba(0,0,0,0.25)]',
-  present: 'border-transparent bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] shadow-[0_18px_45px_rgba(0,0,0,0.22)]',
-  absent: 'bg-muted text-muted-foreground',
-};
+
 
 const SOLO_LOSS_MESSAGES = [
   'The word slipped through your fingers this time.',
@@ -174,8 +172,9 @@ export default function GamePage() {
   const router = useRouter();
   const { db, userId, user, profile } = useFirebase();
   const { toast } = useToast();
-  const { resolvedTheme } = useTheme();
+  const { theme, resolvedTheme } = useTheme();
   const isLightMode = resolvedTheme === 'light';
+  const isMobile = useIsMobile();
 
   const [game, setGame] = useState<GameDocument | null>(null);
   const [loading, setLoading] = useState(true);
@@ -956,7 +955,7 @@ export default function GamePage() {
           // So we treat it as a round completion. 
           // If isWin=false, we pass null? Or should we wait?
           // So we MUST advance.
-          await advanceGameRound(gameId, isWin ? userId : null, currentRound);
+          void advanceGameRound(gameId, isWin ? userId : null, currentRound).catch(err => console.error('Background advance failed', err));
         }
       }
     } catch (error) {
@@ -1031,8 +1030,11 @@ export default function GamePage() {
       const newGuess = chars.join('').slice(0, maxLength); // Ensure max length
 
       const pulseId = Date.now();
-      setKeyPulse({ letter: normalized, id: pulseId });
-      setTilePulse({ index: targetIndex, id: pulseId });
+      if (!isMobile) {
+        setKeyPulse({ letter: normalized, id: pulseId });
+        setTilePulse({ index: targetIndex, id: pulseId });
+      }
+
       setCurrentGuess(newGuess);
 
       if (game.multiplayerMode === 'co-op') {
@@ -1053,7 +1055,7 @@ export default function GamePage() {
         }
       }
     },
-    [currentGuess, game, isMyTurn, isPlayer, lockedIndices, selectedIndex, broadcastTyping]
+    [currentGuess, game, isMyTurn, isPlayer, lockedIndices, selectedIndex, broadcastTyping, isMobile]
   );
 
   const removeLetter = useCallback(() => {
@@ -1136,7 +1138,7 @@ export default function GamePage() {
 
   /* Interaction Handlers */
   useEffect(() => {
-    if (!gameId) return;
+    if (!db || !gameId) return;
     const unsub = onSnapshot(doc(db, 'games', gameId), (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data() as GameDocument;
@@ -1229,6 +1231,37 @@ export default function GamePage() {
       e.preventDefault();
       e.stopPropagation();
       return;
+    }
+  }, []);
+
+  const handleTileMouseDown = useCallback((index: number, isActive: boolean, e: React.MouseEvent) => {
+    if (!isMyTurn || !isPlayer || game?.status !== 'in_progress' || !isActive) return;
+    isLongPressRef.current = false;
+    longPressTimerRef.current = setTimeout(() => {
+      isLongPressRef.current = true;
+      setLockedIndices(prev => {
+        const next = new Set(prev);
+        if (next.has(index)) next.delete(index);
+        else next.add(index);
+        return next;
+      });
+    }, 500); // 500ms long press
+  }, [game?.status, isMyTurn, isPlayer]);
+
+  const handleTileMouseUp = useCallback((index: number, e: React.MouseEvent) => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    if (isLongPressRef.current) {
+      setTimeout(() => { isLongPressRef.current = false; }, 100);
+    }
+  }, []);
+
+  const handleTileMouseLeave = useCallback((index: number, e: React.MouseEvent) => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
     }
   }, []);
 
@@ -1377,12 +1410,7 @@ export default function GamePage() {
     return rows;
   }, [isMyTurn, liveGuess, game, isPlayer]);
 
-  // Effect to broadcast current guess when it changes (simpler than hooking into add/remove)
-  useEffect(() => {
-    if (!game || !isPlayer || !isMyTurn || game.multiplayerMode !== 'co-op') return;
-    const row = game.guesses?.length ?? 0;
-    broadcastTyping(currentGuess, row);
-  }, [currentGuess, game, isPlayer, isMyTurn, broadcastTyping]);
+
 
   const activePeerTyping = useMemo(() => {
     if (!isCoopMode || isMyTurn || !game) return null;
@@ -1456,7 +1484,7 @@ export default function GamePage() {
     if (!game) return 'Match complete';
 
     // PvP Best-of-3 Logic
-    if (game.matchState && !isCoopMode) {
+    if (game.matchState && !isCoopMode && game.gameType !== 'solo') {
       const isMatchEnd = game.matchState.isMatchOver;
       const isMe = game.winnerId === userId;
       // Identify if this is potentially the final round
@@ -1908,15 +1936,16 @@ export default function GamePage() {
         const gameRef = doc(db, 'games', gameId);
         await updateDoc(gameRef, {
           status: 'completed',
-          completionMessage: 'You ended the solo session.',
+          completionMessage: getRandomSoloLossMessage(),
           completedAt: new Date().toISOString(),
           endedBy: userId,
+          winnerId: null, // Ensure it registers as a loss
         });
       }
     } catch (error) {
       console.warn("Failed to update solo game status on exit", error);
     } finally {
-      router.push('/');
+      // router.push('/');
     }
   }, [router, db, gameId, userId]);
 
@@ -2395,6 +2424,51 @@ export default function GamePage() {
                       </div>
                     </div>
                   </div>
+                ) : isCoopMode ? (
+                  // CO-OP LAYOUT (2-Row, Centered Top)
+                  <div className="flex flex-col gap-4 w-full">
+                    {/* Row 1: Turn Status (Centered) */}
+                    <div className="flex justify-center w-full">
+                      <span className="inline-flex items-center gap-2 rounded-full border border-transparent bg-[hsl(var(--accent))] px-4 py-2 text-xs font-semibold uppercase tracking-[0.25em] text-[hsl(var(--accent-foreground))] shadow-[0_12px_32px_rgba(16,185,129,0.32)] dark:border-[hsla(var(--accent)/0.45)] dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12] dark:text-muted-foreground dark:shadow-none">
+                        <Clock3 className="h-4 w-4" />
+                        <span>{turnStatusCopy ?? 'Waiting'}</span>
+                      </span>
+                    </div>
+
+                    {/* Row 2: GameMode | Players | Timer (Centered Row) */}
+                    <div className="flex flex-wrap items-center justify-center gap-3 w-full">
+                      {/* Game Mode Pill */}
+                      {modeMeta && (
+                        <span className={cn(
+                          "inline-flex h-9 items-center gap-2 rounded-full border border-transparent px-4 text-xs font-semibold uppercase tracking-[0.25em] shadow-[0_15px_35px_rgba(255,140,0,0.3)] dark:shadow-none transition-all",
+                          "bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] dark:border-[hsla(var(--primary)/0.45)] dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12] dark:text-muted-foreground"
+                        )}>
+                          <modeMeta.icon className="h-4 w-4" />
+                          <span>{modeMeta.label}</span>
+                        </span>
+                      )}
+
+                      {/* Player Count Pill */}
+                      <span className="inline-flex h-9 items-center gap-2 rounded-full border border-transparent bg-[hsl(var(--primary))] px-4 text-sm text-[hsl(var(--primary-foreground))] shadow-[0_12px_30px_rgba(255,140,0,0.28)] dark:border-[hsla(var(--primary)/0.45)] dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12] dark:text-muted-foreground dark:shadow-none">
+                        <Users className="h-4 w-4" />
+                        <span className="font-mono text-base text-[hsl(var(--primary-foreground))] dark:text-foreground">{game.players.length}</span>
+                      </span>
+
+                      {/* Timer Pill (Only if value exists / not unlimited) */}
+                      {timerPills.length > 0 && <div className="basis-full h-0 sm:hidden" />}
+                      {timerPills.length > 0 && timerPills.map(({ label, value }) => (
+                        // Co-op usually just has one shared timer (Round or Turn), or none if unlimited.
+                        // Using generic map just to be safe if multiple timers exist.
+                        <span
+                          key={`coop-timer-${label}`}
+                          className="inline-flex h-9 items-center gap-3 rounded-full border border-transparent bg-[hsl(var(--accent))] px-4 text-[hsl(var(--accent-foreground))] shadow-[0_12px_32px_rgba(16,185,129,0.32)] dark:border-[hsla(var(--accent)/0.5)] dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12] dark:text-foreground dark:shadow-none"
+                        >
+                          <Hourglass className="h-4 w-4" />
+                          <span className="font-mono text-sm tracking-[0.2em] text-[hsl(var(--accent-foreground))] dark:text-foreground">{value}</span>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
                 ) : (
                   // EXISTING LAYOUT
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -2477,91 +2551,22 @@ export default function GamePage() {
               </div>
 
 
-              <div className="grid gap-2 ">
-                {displayRows.map((row, rowIndex) => {
-                  const isActiveRow = row.state === 'active';
-                  return (
-                    <div
-                      key={rowIndex}
-                      className="mx-auto grid w-full max-w-[min(92vw,420px)] gap-2 sm:gap-3"
-                      style={{ gridTemplateColumns: `repeat(${game.wordLength}, minmax(0, 1fr))` }}
-                    >
-                      {row.letters.map((letter, colIndex) => {
-                        const evaluation = row.evaluations[colIndex];
-                        const isSubmitted = row.state === 'submitted';
-                        const isRevealed = revealedTiles[`${rowIndex}-${colIndex}`];
-                        const tileKey = `${rowIndex}-${colIndex}`;
-
-                        let content = letter;
-                        let className = cn(
-                          'group relative flex aspect-square items-center justify-center rounded-xl border-2 text-2xl font-bold uppercase transition-all duration-300 sm:rounded-2xl sm:text-4xl',
-                          'select-none',
-                          isLightMode
-                            ? 'bg-white border-transparent text-[#2b1409] shadow-[inset_0_-4px_4px_rgba(0,0,0,0.05),0_4px_10px_rgba(0,0,0,0.1)]'
-                            : 'bg-[#1a1d26] border-transparent text-white shadow-[0_4px_12px_rgba(0,0,0,0.25)]'
-                        );
-
-                        if (isSubmitted) {
-                          if (revealedTiles[tileKey]) {
-                            className = cn(
-                              'group relative flex aspect-square items-center justify-center rounded-xl border-2 text-2xl font-bold uppercase transition-all duration-500 sm:rounded-2xl sm:text-4xl',
-                              evaluation ? tileTone[evaluation as GuessScore] : ''
-                            );
-                          }
-                        } else if (row.state === 'active') {
-                          const isActive = letter !== ' ';
-                          const isSelected = selectedIndex === colIndex;
-                          const isLocked = lockedIndices.has(colIndex);
-                          const isPulse = tilePulse?.index === colIndex && tilePulse.id > 0;
-
-                          // @ts-expect-error - added custom prop in useMemo
-                          const isPeerInput = Boolean(row.isPeerInput);
-
-                          className = cn(
-                            'group relative flex aspect-square items-center justify-center rounded-xl border-2 text-2xl font-bold uppercase transition-all duration-100 sm:rounded-2xl sm:text-4xl',
-                            // Base Active Row Style (slightly distinct from inactive)
-                            'border-[hsla(var(--primary)/0.25)] bg-white/5',
-
-                            // Pulse Animation
-                            isPulse && 'scale-105 border-[hsl(var(--primary))] shadow-[0_0_20px_hsla(var(--primary)/0.4)]',
-
-                            // Locked State
-                            isLocked && 'border-[hsl(var(--accent))] shadow-[0_0_15px_hsla(var(--accent)/0.3)] bg-white/20 dark:bg-white/5 opacity-90',
-
-                            // Peer Input (Co-op)
-                            isPeerInput && !isLocked && 'border-[hsl(var(--primary)/0.5)] bg-[hsl(var(--primary)/0.1)] text-[hsl(var(--primary))]',
-
-                            // Filled Letter (User Input)
-                            isActive && !isPeerInput && !isLocked && 'border-[hsl(var(--primary))] bg-[hsl(var(--primary)/0.1)] text-foreground shadow-[inset_4px_4px_10px_rgba(0,0,0,0.22),inset_-4px_-4px_12px_rgba(255,255,255,0.2)]',
-
-                            // Selection (Ring overlay - does not interfere with border/bg)
-                            isSelected && 'ring-2 ring-[hsl(var(--primary))] ring-offset-2 ring-offset-[hsl(var(--panel-neutral))] dark:ring-offset-background',
-
-                            // Empty Selected specific polish (optional, mimicking original 'pulse' feel if desired, but ring is main)
-                            isSelected && !isActive && !isPeerInput && 'bg-[hsl(var(--primary)/0.05)]'
-                          );
-                        }
-
-                        return (
-                          <div
-                            key={colIndex}
-                            className={className}
-                            onClick={(e) => handleTileClick(colIndex, row.state === 'active', e)}
-                            onTouchStart={() => handleTileTouchStart(colIndex, row.state === 'active')}
-                            onTouchEnd={(e) => handleTileTouchEnd(colIndex, e)}
-                          >
-                            {row.state === 'active' && lockedIndices.has(colIndex) && (
-                              <div className="absolute -right-1 -top-1 rounded-full bg-[hsl(var(--accent))] p-0.5 text-[hsl(var(--accent-foreground))] shadow-sm sm:-right-2 sm:-top-2 sm:p-1">
-                                <Lock className="h-2 w-2 sm:h-3 sm:w-3" />
-                              </div>
-                            )}
-                            {content}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  );
-                })}
+              <div className="mx-auto w-full max-w-[min(92vw,420px)]">
+                <GameGrid
+                  wordLength={game.wordLength}
+                  rows={displayRows as any}
+                  isLightMode={isLightMode}
+                  revealedTiles={revealedTiles}
+                  selectedIndex={selectedIndex}
+                  lockedIndices={lockedIndices}
+                  tilePulse={tilePulse}
+                  onTileClick={handleTileClick}
+                  onTileTouchStart={handleTileTouchStart}
+                  onTileTouchEnd={handleTileTouchEnd}
+                  onTileMouseDown={handleTileMouseDown}
+                  onTileMouseUp={handleTileMouseUp}
+                  onTileMouseLeave={handleTileMouseLeave}
+                />
               </div>
             </div >
           </div >

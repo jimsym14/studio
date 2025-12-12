@@ -47,3 +47,13 @@ export function normalizeWord(word: string): string {
 	return word.trim().toLowerCase();
 }
 
+
+export function getWordByIndex(index: number, length: WordLength): string {
+	const list = getList(length);
+	if (!list.length) {
+		throw new Error(`No words available for length ${length}`);
+	}
+	// Use modulo to ensure index is valid
+	const safeIndex = ((index % list.length) + list.length) % list.length;
+	return list[safeIndex];
+}

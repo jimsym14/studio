@@ -177,7 +177,7 @@ type SignUpValues = z.infer<typeof signUpSchema>;
 
 export default function LoginPage() {
   const router = useRouter();
-  const { auth, db, user, profile, signOut, sessionConflict } = useFirebase();
+  const { auth, db, user, profile, signOut, sessionConflict, retrySessionClaim, isAuthReady, isProfileLoading } = useFirebase();
   const { toast } = useToast();
   const [guestName, setGuestName] = useState(generateGuestHandle);
   const [guestLoading, setGuestLoading] = useState(false);
@@ -316,6 +316,14 @@ export default function LoginPage() {
       });
   }, [auth, db]);
 
+  // Fallback: If auth state detects a user but getRedirectResult failed/was skipped,
+  // and we don't have a profile yet, trigger the success flow to check profile/show dialog.
+  useEffect(() => {
+    if (isAuthReady && user && !isProfileLoading && !profile?.username && !usernameDialogOpen) {
+      handleAuthSuccess(user);
+    }
+  }, [isAuthReady, user, isProfileLoading, profile, usernameDialogOpen]);
+
   const handleGoogleLogin = async () => {
     if (!auth || !db) return;
     setGoogleLoading(true);
@@ -324,11 +332,7 @@ export default function LoginPage() {
       const provider = new GoogleAuthProvider();
       provider.setCustomParameters({ prompt: 'select_account' });
 
-      if (isMobile) {
-        await signInWithRedirect(auth, provider);
-        return; // Redirecting...
-      }
-
+      // Reverting to popup for mobile due to reliability issues with redirect flow
       const credential = await signInWithPopup(auth, provider);
       await handleAuthSuccess(credential.user);
     } catch (error) {
@@ -442,6 +446,15 @@ export default function LoginPage() {
   };
 
   const showRedirectScreen = Boolean(user && profile?.username && !usernameDialogOpen);
+
+  if (sessionConflict) {
+    return (
+      <SessionConflictScreen
+        onRetry={() => retrySessionClaim(true)}
+        onSignOut={() => signOut()}
+      />
+    );
+  }
 
   if (showRedirectScreen) {
     return (
@@ -838,6 +851,41 @@ function OrangePulseBackdrop() {
         animate={{ scale: [0.85, 1.25, 0.85], y: [0, -30, 0] }}
         transition={{ duration: 26, repeat: Infinity, ease: 'easeInOut' }}
       />
+    </div>
+  );
+}
+function SessionConflictScreen({ onRetry, onSignOut }: { onRetry: () => void; onSignOut: () => void }) {
+  return (
+    <div className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-b from-[#1a0800] via-[#050301] to-[#120400] px-6 text-center text-white font-moms">
+      <OrangePulseBackdrop />
+      <motion.div
+        className="flex h-20 w-20 items-center justify-center rounded-full border-4 border-rose-500/60 text-3xl font-bold text-rose-500 bg-rose-500/10"
+        animate={{ scale: [1, 1.05, 1] }}
+        transition={{ repeat: Infinity, duration: 2, ease: 'easeInOut' }}
+      >
+        !
+      </motion.div>
+      <h2 className="mt-8 text-xl font-black uppercase tracking-[0.2em] text-white">
+        Active elsewhere
+      </h2>
+      <p className="mt-4 max-w-md text-base text-white/60 leading-relaxed font-sans">
+        You are signed in on another device (or have an old tab open). Switching will disconnect the other session.
+      </p>
+      <div className="mt-10 flex w-full max-w-xs flex-col gap-3">
+        <Button
+          className="w-full rounded-2xl bg-white text-slate-900 font-bold tracking-wide hover:bg-white/90 py-6"
+          onClick={onRetry}
+        >
+          Switch to this device
+        </Button>
+        <Button
+          variant="ghost"
+          className="w-full text-white/40 hover:text-white hover:bg-white/5"
+          onClick={onSignOut}
+        >
+          Sign out
+        </Button>
+      </div>
     </div>
   );
 }

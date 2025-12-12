@@ -1,5 +1,6 @@
 import type { GuessResult } from '@/lib/wordle';
 
+export type GameType = 'solo' | 'multiplayer';
 export type GameStatus = 'waiting' | 'in_progress' | 'completed';
 export type LobbyVisibility = 'public' | 'private';
 

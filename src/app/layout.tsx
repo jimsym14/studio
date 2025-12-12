@@ -7,6 +7,9 @@ import { AuthGate } from '@/components/auth-gate';
 export const metadata: Metadata = {
   title: 'WordMates',
   description: 'A real-time, social multiplayer word-guessing game.',
+  icons: {
+    icon: '/icon.ico',
+  },
 };
 
 export default function RootLayout({

@@ -4,6 +4,7 @@ import React, { memo, useEffect, useState, type CSSProperties } from 'react';
 import { RotateCcw, CornerDownLeft, Delete } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import { useIsMobile } from '@/hooks/use-mobile';
 import type { GuessScore } from '@/lib/wordle';
 
 const keyboardRows = ['qwertyuiop', 'asdfghjkl', 'zxcvbnm'];
@@ -41,6 +42,8 @@ export const Keyboard = memo(function Keyboard({
     keyPulse,
     keyboardFeedback,
 }: KeyboardProps) {
+    const isMobile = useIsMobile();
+
     return (
         <div className="space-y-2.5">
             {keyboardRows.map((row) => (
@@ -69,7 +72,8 @@ export const Keyboard = memo(function Keyboard({
                                         : 'border-gray-400 bg-white/90 text-[#2b140c] backdrop-blur shadow-md dark:border-white/10 dark:bg-white/10 dark:text-white/80',
                                     hint && keyboardTone[hint],
                                     isAbsentKey && !isLightMode && 'dark:bg-white/[0.04] dark:text-white/30 dark:border-white/10 dark:opacity-45 dark:hover:opacity-60 dark:hover:-translate-y-0 dark:hover:shadow-none',
-                                    pulseActive && 'animate-key-pop',
+                                    !isMobile && pulseActive && 'animate-key-pop',
+                                    isMobile && 'active:scale-95 active:bg-black/5 dark:active:bg-white/10 active:transition-none',
                                     feedbackEntry && 'keyboard-feedback',
                                     feedbackEntry && `keyboard-feedback-${feedbackEntry.evaluation}`,
                                     (!canInteract) && 'opacity-60'

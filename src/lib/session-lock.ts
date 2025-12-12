@@ -53,7 +53,8 @@ export async function claimSessionLock(
   db: Firestore,
   uid: string,
   sessionId: string,
-  metadata: Pick<SessionLockDoc, 'deviceLabel' | 'origin'>
+  metadata: Pick<SessionLockDoc, 'deviceLabel' | 'origin'>,
+  force = false
 ): Promise<SessionClaimResult> {
   const current = now();
 
@@ -86,7 +87,7 @@ export async function claimSessionLock(
     const stale = isSessionLockStale(existing);
     const active = isSessionLockActive(existing);
 
-    if (existing.sessionId === sessionId || stale || !active) {
+    if (existing.sessionId === sessionId || stale || !active || force) {
       const payload = {
         sessionId,
         lastSeenAt: serverTimestamp(),
