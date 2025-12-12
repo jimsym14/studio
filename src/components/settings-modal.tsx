@@ -338,7 +338,7 @@ export function SettingsModal({ isOpen, gameType, onClose, inviteFriendId, invit
                         render={({ field }) => (
                           <FormItem className="space-y-1.5">
                             <FormLabel className="text-xs font-semibold flex items-center gap-1.5 text-foreground/80">
-                              <Hourglass className="h-3.5 w-3.5" /> Match Time
+                              <Hourglass className="h-3.5 w-3.5" /> Round Time
                             </FormLabel>
                             <FormControl>
                               <SettingsSegmentedControl

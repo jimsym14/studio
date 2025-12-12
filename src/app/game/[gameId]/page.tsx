@@ -17,6 +17,7 @@ import {
   Swords,
   Timer,
   Users,
+  Hourglass,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
@@ -25,12 +26,21 @@ import { useParams, useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'framer-motion';
 
 import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { useFirebase } from '@/components/firebase-provider';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { GraffitiBackground } from '@/components/graffiti-background';
 import { usePlayerNames } from '@/hooks/use-player-names';
 import { useToast } from '@/hooks/use-toast';
-import { createGame, advanceGameRound } from '@/lib/actions/game';
+import { createGame, advanceGameRound, toggleEndVote, surrenderMatch } from '@/lib/actions/game';
 import type { GameDocument } from '@/types/game';
 import type { GuessResult, GuessScore } from '@/lib/wordle';
 import { getKeyboardHints, scoreGuess } from '@/lib/wordle';
@@ -865,9 +875,17 @@ export default function GamePage() {
         endVotes: [],
       };
 
-      if (matchMinutes) {
-        updatePayload.matchDeadline = addMinutesIso(guessEntry.submittedAt, matchMinutes);
+      if (matchMinutes && !game.roundDeadline) {
+        // Init Round Timer on first move
+        updatePayload.roundDeadline = addMinutesIso(guessEntry.submittedAt, matchMinutes);
       }
+
+      // Init Turn Timer on first move (of round)
+      if (!game.turnStartedAt) {
+        updatePayload.turnStartedAt = guessEntry.submittedAt;
+      }
+      // Note: We don't use matchDeadline in payload anymore for rounds.
+
       if (turnSeconds) {
         updatePayload.turnDeadline = addSecondsIso(guessEntry.submittedAt, turnSeconds);
       } else {
@@ -891,6 +909,7 @@ export default function GamePage() {
       } else if (game.gameType === 'multiplayer') {
         if (shouldRotateTurns && nextTurnPlayerId) {
           updatePayload.currentTurnPlayerId = nextTurnPlayerId;
+          updatePayload.turnStartedAt = new Date().toISOString(); // Reset timer for next player
         } else if (!game.currentTurnPlayerId && order.length) {
           updatePayload.currentTurnPlayerId = order[0];
         }
@@ -936,9 +955,8 @@ export default function GamePage() {
           // Actually, if updatePayload.status is 'completed', we forced the round to end.
           // So we treat it as a round completion. 
           // If isWin=false, we pass null? Or should we wait?
-          // If status='completed', the round is definitely OVER.
           // So we MUST advance.
-          await advanceGameRound(gameId, isWin ? userId : null, authToken);
+          await advanceGameRound(gameId, isWin ? userId : null, currentRound);
         }
       }
     } catch (error) {
@@ -1132,10 +1150,10 @@ export default function GamePage() {
   }, [db, gameId]);
 
   /* Selection Logic */
-  const handleTileClick = useCallback((index: number, e: React.MouseEvent) => {
+  const handleTileClick = useCallback((index: number, isActiveRow: boolean, e: React.MouseEvent) => {
     e.stopPropagation();
     if (isLongPressRef.current) return; // Should be caught by TouchEnd preventDefault but double check
-    if (!game || game.status !== 'in_progress' || !isPlayer || !isMyTurn) return;
+    if (!game || game.status !== 'in_progress' || !isPlayer || !isMyTurn || !isActiveRow) return;
 
     setSelectedIndex(index);
     focusHiddenInput();
@@ -1187,8 +1205,8 @@ export default function GamePage() {
     setSelectedIndex(null);
   }, []);
 
-  const handleTileTouchStart = useCallback((index: number) => {
-    if (!isMyTurn || !isPlayer || game?.status !== 'in_progress') return;
+  const handleTileTouchStart = useCallback((index: number, isActiveRow: boolean) => {
+    if (!isMyTurn || !isPlayer || game?.status !== 'in_progress' || !isActiveRow) return;
     isLongPressRef.current = false;
     longPressTimerRef.current = setTimeout(() => {
       isLongPressRef.current = true;
@@ -1229,36 +1247,7 @@ export default function GamePage() {
     }
   }, [lobbyLink, toast]);
 
-  const handleSoloEnd = useCallback(async () => {
-    if (!db || !gameId) return;
-    try {
-      const gameRef = doc(db, 'games', gameId);
-      await updateDoc(gameRef, {
-        status: 'completed',
-        completionMessage: 'You ended the solo session.',
-        completedAt: new Date().toISOString(),
-        endedBy: userId ?? null,
-      });
-    } catch (error) {
-      console.error('Failed to end solo game', error);
-      toast({ variant: 'destructive', title: 'Could not end game' });
-    }
-  }, [db, gameId, toast, userId]);
 
-  const handleVoteToEnd = useCallback(async () => {
-    if (!db || !gameId || !userId || hasVotedToEnd) return;
-    try {
-      const gameRef = doc(db, 'games', gameId);
-      await updateDoc(gameRef, {
-        endVotes: arrayUnion(userId),
-      });
-      setHasVotedToEnd(true);
-      toast({ title: 'Vote registered', description: 'Waiting for all players.' });
-    } catch (error) {
-      console.error('Failed to vote to end game', error);
-      toast({ variant: 'destructive', title: 'Vote failed', description: 'Try again later.' });
-    }
-  }, [db, gameId, hasVotedToEnd, toast, userId]);
 
   const handleRematch = useCallback(async () => {
     if (!firebaseConfig || !userId || !game || !db) return;
@@ -1745,6 +1734,9 @@ export default function GamePage() {
   useEffect(() => {
     if (!game || !game.matchState || game.matchState.isMatchOver || isSubmitting) return;
 
+    // Fix: Do not auto-advance if the game is still in progress and no one has won this round/game yet.
+    if (game.status === 'in_progress' && !game.winnerId) return;
+
     if (!game.winnerId) {
       // If it's a draw, ensure we still check if it's the final round
     }
@@ -1806,7 +1798,33 @@ export default function GamePage() {
     if (didLose) {
       setShockwaveSeed((seed) => seed + 1);
     }
+    if (didLose) {
+      setShockwaveSeed((seed) => seed + 1);
+    }
   }, [didLose, didWin, showResultPopup]);
+
+  // Auto-Open Bonus Popup (Round Completion)
+  useEffect(() => {
+    // If round bonus exists, it means a round just finished. Show popup.
+    if (game?.matchState?.roundBonus) {
+      setShowBonusPopup(true);
+    }
+  }, [game?.matchState?.roundBonus?.beneficiaryId]); // Trigger on ID change
+
+  // Auto-Open Result Popup on Game Completion
+  useEffect(() => {
+    if (game?.status === 'completed' && !showResultPopup && !game.matchState?.isMatchOver) {
+      // Wait, if it's just a round completion, do we show it?
+      // Yes, "Round Winner" popup.
+      // But if isMatchOver is false, it might just mean waiting for next round?
+      // Current UI logic: 
+      // If status=completed -> Game is effectively paused/over.
+      // So yes, showing popup is correct.
+      setShowResultPopup(true);
+    } else if (game?.status === 'completed' && !showResultPopup) {
+      setShowResultPopup(true);
+    }
+  }, [game?.status, showResultPopup, game?.matchState?.isMatchOver]);
 
   useEffect(() => {
     if (pendingGuessTargetCount === null) return;
@@ -1816,6 +1834,91 @@ export default function GamePage() {
       setCurrentGuess('');
     }
   }, [pendingGuessTargetCount, submittedGuessCount]);
+
+  // End Match Logic State
+  const [isEndMatchDialogOpen, setIsEndMatchDialogOpen] = useState(false);
+
+  // Vote Cancel Notification State
+  const [showVoteAnnouncementPopup, setShowVoteAnnouncementPopup] = useState(false);
+  const previousVoteCountRef = useRef(0);
+
+  useEffect(() => {
+    if (!game?.endVotes) return;
+    const currentVotes = game.endVotes;
+    const count = currentVotes.length;
+    const prevCount = previousVoteCountRef.current;
+
+    if (count > prevCount && count > 0) {
+      // Logic: A vote was added. Show popup if not already voting.
+      if (!isEndMatchDialogOpen) {
+        setShowVoteAnnouncementPopup(true);
+      }
+    }
+    previousVoteCountRef.current = count;
+  }, [game?.endVotes, isEndMatchDialogOpen]);
+
+  // Handle "View Vote" action
+  const handleOpenVoteDialogFromPopup = useCallback(() => {
+    setShowVoteAnnouncementPopup(false);
+    setIsEndMatchDialogOpen(true);
+  }, []);
+
+  // Auto-close dialogs if match ends
+  useEffect(() => {
+    if (game?.status === 'completed') {
+      setIsEndMatchDialogOpen(false);
+      setShowVoteAnnouncementPopup(false);
+    }
+  }, [game?.status]);
+
+  const handleVoteCancel = useCallback(async () => {
+    if (!gameId || !userId || !user) return;
+    try {
+      const authToken = await user.getIdToken();
+      await toggleEndVote(gameId, authToken);
+    } catch (error) {
+      console.error("Failed to vote cancel:", error);
+      toast({ variant: 'destructive', title: 'Action failed', description: 'Could not submit vote.' });
+    }
+  }, [gameId, userId, user, toast]);
+
+  const handleSurrenderMatch = useCallback(async () => {
+    if (!gameId || !userId || !user) return;
+    try {
+      const authToken = await user.getIdToken();
+      await surrenderMatch(gameId, authToken);
+      setIsEndMatchDialogOpen(false); // Close dialog
+    } catch (error) {
+      console.error("Failed to surrender:", error);
+      toast({ variant: 'destructive', title: 'Action failed', description: 'Could not surrender.' });
+    }
+  }, [gameId, userId, user, toast]);
+
+  // Solo End: Immediate Redirect
+  // Solo End: Immediate Redirect (with Cleanup)
+  const handleSoloEnd = useCallback(async () => {
+    if (!gameId) {
+      router.push('/');
+      return;
+    }
+
+    // Attempt to close the game session in DB, but always redirect
+    try {
+      if (db && userId) {
+        const gameRef = doc(db, 'games', gameId);
+        await updateDoc(gameRef, {
+          status: 'completed',
+          completionMessage: 'You ended the solo session.',
+          completedAt: new Date().toISOString(),
+          endedBy: userId,
+        });
+      }
+    } catch (error) {
+      console.warn("Failed to update solo game status on exit", error);
+    } finally {
+      router.push('/');
+    }
+  }, [router, db, gameId, userId]);
 
   const sharedEndButtonClasses = cn(
     'inline-flex h-11 items-center justify-center rounded-full border border-transparent text-sm font-semibold uppercase tracking-[0.2em] transition disabled:opacity-60',
@@ -1837,16 +1940,213 @@ export default function GamePage() {
       </Button>
     )
     : (
-      <Button
-        className={sharedEndButtonClasses}
-        onClick={handleVoteToEnd}
-        disabled={!isPlayer || hasVotedToEnd || game?.status !== 'in_progress'}
-        aria-label={hasVotedToEnd ? 'Vote sent' : 'Vote to end'}
-      >
-        <DoorOpen className="h-4 w-4" />
-        <span className="hidden sm:inline">{hasVotedToEnd ? 'Vote sent' : 'Vote to end'}</span>
-      </Button>
+      <>
+        <Button
+          className={sharedEndButtonClasses}
+          onClick={() => setIsEndMatchDialogOpen(true)}
+          disabled={!isPlayer || game?.status !== 'in_progress'}
+          aria-label="End Match"
+        >
+          <DoorOpen className="h-4 w-4" />
+          <span className="hidden sm:inline">End Match</span>
+        </Button>
+
+        <Dialog open={isEndMatchDialogOpen} onOpenChange={setIsEndMatchDialogOpen}>
+          <DialogContent className="w-[90vw] max-w-sm rounded-[1.5rem] border border-white/10 bg-black/60 p-0 text-white shadow-2xl backdrop-blur-xl data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 sm:max-w-md">
+            <div className="flex flex-col gap-6 p-6">
+              <DialogHeader>
+                <DialogTitle className="text-center font-black uppercase tracking-[0.2em] text-xl text-white/90 drop-shadow-md">
+                  End Match
+                </DialogTitle>
+                <DialogDescription className="text-center text-xs font-medium uppercase tracking-widest text-white/50">
+                  Select an option to conclude the game
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="flex flex-col gap-3">
+                {/* Surrender Option */}
+                <div className="group relative overflow-hidden rounded-xl border border-white/5 bg-white/5 p-4 transition-all hover:border-[hsl(var(--destructive)/0.5)] hover:bg-[hsl(var(--destructive)/0.1)]">
+                  <div className="absolute inset-0 bg-gradient-to-br from-[hsl(var(--destructive)/0.1)] to-transparent opacity-0 transition-opacity group-hover:opacity-100" />
+                  <div className="relative z-10">
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="flex items-center gap-2 font-bold uppercase tracking-wider text-[hsl(var(--destructive))]">
+                        <AlertTriangle className="h-4 w-4" />
+                        Surrender
+                      </h4>
+                    </div>
+                    <p className="mb-4 text-xs font-medium text-white/60">
+                      Immediate forfeit. Opponent wins.
+                    </p>
+                    <Button
+                      variant="destructive"
+                      className="w-full rounded-lg font-bold uppercase tracking-widest shadow-lg transition-transform active:scale-95"
+                      onClick={handleSurrenderMatch}
+                    >
+                      Surrender Match
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Vote Cancel Option */}
+                <div className="group relative overflow-hidden rounded-xl border border-white/5 bg-white/5 p-4 transition-all hover:border-[hsl(var(--primary)/0.5)] hover:bg-[hsl(var(--primary)/0.1)]">
+                  <div className="absolute inset-0 bg-gradient-to-br from-[hsl(var(--primary)/0.1)] to-transparent opacity-0 transition-opacity group-hover:opacity-100" />
+                  <div className="relative z-10">
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="flex items-center gap-2 font-bold uppercase tracking-wider text-[hsl(var(--primary))]">
+                        <Handshake className="h-4 w-4" />
+                        Vote To Cancel
+                      </h4>
+                      <span className="flex items-center justify-center rounded-md border border-white/10 bg-black/40 px-2.5 py-1 text-[10px] font-bold text-white/80">
+                        {game?.endVotes?.length ?? 0}/{game?.activePlayers?.length ?? 0}
+                      </span>
+                    </div>
+                    <p className="mb-4 text-xs font-medium text-white/60">
+                      Mutual agreement. Result is a Tie.
+                    </p>
+                    <Button
+                      variant={hasVotedToEnd ? "secondary" : "default"}
+                      className={cn(
+                        "w-full rounded-lg font-bold uppercase tracking-widest shadow-lg transition-transform active:scale-95",
+                        hasVotedToEnd ? "bg-white/10 text-white hover:bg-white/20" : "bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))]"
+                      )}
+                      onClick={handleVoteCancel}
+                    >
+                      {hasVotedToEnd ? "Retract Vote" : "Vote to Cancel"}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+      </>
     );
+
+  // --- HOSTED HOOKS (Moved before conditional returns) ---
+  const handleSurrender = useCallback(async () => {
+    if (!game || !userId) return;
+
+    // In PvP, if I surrender, the other player wins immediately.
+    // If >2 players, it's elimination? Assume 2-player PvP for now as per requirements.
+    const opponentId = game.players.find(p => p !== userId);
+    if (opponentId) {
+      const currentRound = game.matchState?.currentRound ?? 1;
+      await advanceGameRound(gameId, opponentId, currentRound);
+    }
+  }, [game, userId, gameId]);
+
+  // 1. Round Timer
+  const [roundTimeRemaining, setRoundTimeRemaining] = useState<string | null>(null);
+  const roundTimerTriggeredRef = useRef(false);
+
+  useEffect(() => {
+    // Reset trigger if round changes
+    if (game?.matchState?.currentRound) {
+      // logic (empty ref reset if needed, but dependency array handles it mostly)
+    }
+  }, [game?.matchState?.currentRound]);
+
+  useEffect(() => {
+    // Paused State (Start of Round)
+    if (!game?.roundDeadline && game?.status === 'in_progress') {
+      const limit = game.roundTimeLimit || matchMinutesFromSetting(game.matchTime);
+      if (limit) {
+        setRoundTimeRemaining(`${limit}:00`);
+      } else {
+        setRoundTimeRemaining(null);
+      }
+      return;
+    }
+
+    if (!game?.roundDeadline || game.status !== 'in_progress') {
+      setRoundTimeRemaining(null);
+      roundTimerTriggeredRef.current = false;
+      return;
+    }
+    const deadline = new Date(game.roundDeadline).getTime();
+
+    const interval = setInterval(() => {
+      const now = Date.now();
+      const diff = deadline - now;
+
+      if (diff <= 1000 && !roundTimerTriggeredRef.current) {
+        // Time is up (1s buffer)
+        roundTimerTriggeredRef.current = true;
+        setRoundTimeRemaining("00:00");
+        clearInterval(interval);
+
+        // Trigger Round Draw
+        if (game.creatorId === userId) {
+          const currentRound = game.matchState?.currentRound ?? 1;
+          const prevWinnerId = game.matchState?.matchWinnerId ?? null;
+          // Previous winner? No, surrender/timeout implies loss for current player? 
+          // Just calling advanceGameRound without winner implies DRAW for this round?
+          // User said "if somebody's turn time depletes... round completion popup".
+          // If Round Timer depletes -> It's a DRAW or LOSS? Usually Draw if round time runs out.
+          // But here we are in Round Timer logic.
+          advanceGameRound(gameId, null, currentRound).catch(console.error);
+        }
+      } else if (diff > 0) {
+        const m = Math.floor(diff / 60000);
+        const s = Math.floor((diff % 60000) / 1000);
+        setRoundTimeRemaining(`${m}:${s.toString().padStart(2, '0')}`);
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [game?.roundDeadline, game?.status, game?.creatorId, userId, gameId, game?.matchState?.currentRound, game?.roundTimeLimit, game?.matchTime]);
+
+  // 2. Chess Timer
+  const [chessTimers, setChessTimers] = useState<Record<string, string>>({});
+  const chessTimerTriggeredRef = useRef(false);
+
+  // Reset trigger on turn change
+  useEffect(() => {
+    chessTimerTriggeredRef.current = false;
+  }, [game?.currentTurnPlayerId]);
+
+  useEffect(() => {
+    if (!game?.playerTimers || game.status !== 'in_progress') {
+      setChessTimers({});
+      return;
+    }
+
+    const interval = setInterval(() => {
+      const nowMs = Date.now();
+      const turnStartMs = game.turnStartedAt ? new Date(game.turnStartedAt).getTime() : nowMs;
+      const elapsed = game.turnStartedAt ? (nowMs - turnStartMs) : 0; // ms since turn start
+
+      const nextTimers: Record<string, string> = {};
+
+      game.playerTimers && Object.keys(game.playerTimers).forEach(pid => {
+        const bankSeconds = game.playerTimers![pid]; // Seconds
+        if (typeof bankSeconds !== 'number') return;
+
+        // If this is the active player, subtract elapsed
+        let remainingSeconds = bankSeconds;
+        if (game.currentTurnPlayerId === pid) {
+          remainingSeconds -= (elapsed / 1000);
+        }
+
+        if (remainingSeconds <= 0) {
+          nextTimers[pid] = "0:00";
+
+          // Trigger Loss logic
+          if (game.currentTurnPlayerId === pid && pid === userId && !chessTimerTriggeredRef.current) {
+            chessTimerTriggeredRef.current = true;
+            handleSurrender();
+          }
+
+        } else {
+          const m = Math.floor(remainingSeconds / 60);
+          const s = Math.floor(remainingSeconds % 60);
+          nextTimers[pid] = `${m}:${s.toString().padStart(2, '0')}`;
+        }
+      });
+      setChessTimers(nextTimers);
+
+    }, 100); // 10hz updates for smoothness
+    return () => clearInterval(interval);
+  }, [game?.playerTimers, game?.turnStartedAt, game?.currentTurnPlayerId, game?.status, userId, handleSurrender]);
 
   const modeMeta = getModeMeta(game);
 
@@ -1866,11 +2166,43 @@ export default function GamePage() {
   }
 
   const currentGuessPreview = liveGuess.padEnd(game.wordLength, ' ');
-  const timerPills: { label: string; value: string }[] = [
-    matchCountdown ? { label: 'Match', value: matchCountdown } : null,
-    turnCountdown ? { label: 'Turn', value: turnCountdown } : null,
-  ].filter((item): item is { label: string; value: string } => Boolean(item));
-  const timerIconLookup = { Match: Timer, Turn: Clock3 };
+
+
+  // Update Pills Display
+  // Color coding logic:
+  // - Round Timer: Always visible.
+  // - Turn Timer: 
+  //   - If it's MY turn: Active/Bright.
+  //   - If it's OPPONENT'S turn: Dimmed/Faint.
+
+  // Actually the requirement is: "fainted when it counts for the other player and it is more visible... if it counts on the screen of the player it is targetted to"
+  // Meaning: My Screen + My Turn = Bright. My Screen + Other Turn = Fainted.
+
+  const timerPills: { label: string; value: string; icon?: any; dim?: boolean; intent?: 'neutral' | 'active' | 'danger' }[] = [];
+
+  // Round Timer Pill
+  if (roundTimeRemaining) {
+    timerPills.push({ label: 'Round', value: roundTimeRemaining, icon: Hourglass, intent: 'neutral' });
+  }
+
+  // Turn Timer
+  if (isMultiplayerGame && game?.currentTurnPlayerId) {
+    const isMyTurnForTimer = game.currentTurnPlayerId === userId;
+    const timerValue = chessTimers[game.currentTurnPlayerId] ?? '--:--';
+
+    // Fallback if timer not ready yet (e.g. key missing) -> show initial limit?
+    // But `chessTimers` updates fast.
+
+    timerPills.push({
+      label: 'Turn',
+      value: timerValue,
+      icon: Clock3,
+      dim: !isMyTurnForTimer, // Dim if not my turn
+      intent: isMyTurnForTimer ? 'active' : 'neutral'
+    });
+  }
+
+  const timerIconLookup: Record<string, LucideIcon> = { Round: Hourglass, Turn: Clock3 };
 
   return (<>
     <div
@@ -1892,7 +2224,9 @@ export default function GamePage() {
         autoCapitalize="off"
         spellCheck="false"
         aria-hidden="true"
+        aria-label="Hidden keyboard input"
       />
+
 
       <div className="pointer-events-none absolute inset-0 z-[1]">
         <div
@@ -1992,7 +2326,7 @@ export default function GamePage() {
                       {modeMeta && (
                         <span className={cn(
                           "inline-flex items-center gap-2 rounded-full border border-transparent px-4 py-2 text-xs font-semibold uppercase tracking-[0.25em] shadow-[0_15px_35px_rgba(255,140,0,0.3)] dark:shadow-none transition-all",
-                          "bg-transparent border-amber-500/50 text-amber-500 dark:text-amber-400"
+                          "bg-white border-amber-500/50 text-amber-600 dark:bg-transparent dark:text-amber-400"
                         )}>
                           <modeMeta.icon className="h-4 w-4" />
                           <span>{modeMeta.label}</span>
@@ -2037,21 +2371,23 @@ export default function GamePage() {
                       <div className="flex justify-end">
                         {timerPills.length > 0 && (
                           <div className="flex flex-wrap justify-end items-start gap-2">
-                            {timerPills.map(({ label, value }) => (
+                            {timerPills.map(({ label, value, intent, dim }) => (
                               <span
                                 key={`board-timer-${label}`}
-                                className="inline-flex items-center gap-3 rounded-full border border-transparent bg-[hsl(var(--accent))] px-4 py-2 text-[hsl(var(--accent-foreground))] shadow-[0_12px_32px_rgba(16,185,129,0.32)] dark:border-[hsla(var(--accent)/0.5)] dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12] dark:text-foreground dark:shadow-none"
+                                className={cn(
+                                  "inline-flex items-center gap-2 rounded-full border border-transparent px-4 py-2 text-sm shadow-[0_12px_30px_rgba(255,140,0,0.28)] dark:border-[hsla(var(--primary)/0.45)] dark:bg-gradient-to-r dark:from-[#13141c] dark:via-[#0c0d14] dark:to-[#090a12] dark:shadow-none transition-all",
+                                  intent === 'active'
+                                    ? "bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] dark:text-white dark:border-white/20"
+                                    : "bg-white text-muted-foreground dark:text-muted-foreground",
+                                  dim && "opacity-50 grayscale"
+                                )}
                               >
                                 {(() => {
-                                  const TimerIcon = timerIconLookup[label as 'Match' | 'Turn'] ?? Clock3;
-                                  return (
-                                    <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-white/20 text-white dark:bg-white/10 dark:text-[hsl(var(--accent))]">
-                                      <TimerIcon className="h-4 w-4" />
-                                      <span className="sr-only">{label}</span>
-                                    </span>
-                                  );
+                                  // Reuse Logic or simplified icon
+                                  const TimerIcon = timerIconLookup[label as 'Round' | 'Turn'] ?? Clock3;
+                                  return <TimerIcon className="h-4 w-4" />;
                                 })()}
-                                <span className="font-mono text-sm tracking-[0.2em] text-[hsl(var(--accent-foreground))] dark:text-foreground">{value}</span>
+                                <span className={cn("font-mono text-base", intent === 'active' ? "text-[hsl(var(--primary-foreground))] dark:text-white" : "text-foreground dark:text-foreground")}>{value}</span>
                               </span>
                             ))}
                           </div>
@@ -2210,8 +2546,8 @@ export default function GamePage() {
                           <div
                             key={colIndex}
                             className={className}
-                            onClick={(e) => handleTileClick(colIndex, e)}
-                            onTouchStart={() => handleTileTouchStart(colIndex)}
+                            onClick={(e) => handleTileClick(colIndex, row.state === 'active', e)}
+                            onTouchStart={() => handleTileTouchStart(colIndex, row.state === 'active')}
                             onTouchEnd={(e) => handleTileTouchEnd(colIndex, e)}
                           >
                             {row.state === 'active' && lockedIndices.has(colIndex) && (
@@ -2254,10 +2590,10 @@ export default function GamePage() {
                       return (
                         <div
                           key={`preview-${index}`}
-                          onClick={(e) => handleTileClick(index, e)}
-                          onTouchStart={() => handleTileTouchStart(index)}
+                          onClick={(e) => handleTileClick(index, true, e)}
+                          onTouchStart={() => handleTileTouchStart(index, true)}
                           onTouchEnd={(e) => handleTileTouchEnd(index, e)}
-                          onMouseDown={() => handleTileTouchStart(index)}
+                          onMouseDown={() => handleTileTouchStart(index, true)}
                           onMouseUp={(e) => handleTileTouchEnd(index, e)}
                           onMouseLeave={(e) => handleTileTouchEnd(index, e)}
                           className={cn(
@@ -2347,7 +2683,7 @@ export default function GamePage() {
         </div >
       </div >
 
-      <div className="mx-auto max-w-md rounded-[26px] border border-[hsl(var(--panel-border))] bg-[hsl(var(--panel-neutral))] p-6 shadow-xl dark:border-border dark:bg-[hsl(var(--card))]">
+      <div className="relative z-10 mx-auto max-w-md rounded-[26px] border border-[hsl(var(--panel-border))] bg-[hsl(var(--panel-neutral))] p-6 shadow-xl dark:border-border dark:bg-[hsl(var(--card))]">
         <div className="flex items-center justify-between">
           <p className="text-xs uppercase tracking-[0.35em] text-muted-foreground">Players</p>
           <span className="text-xs text-muted-foreground">{game.players.length} total</span>
@@ -2699,6 +3035,50 @@ export default function GamePage() {
         </div>
       )}
     </AnimatePresence>
+
+    {/* Vote Announcement Popup */}
+    {
+      showVoteAnnouncementPopup && !isEndMatchDialogOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4">
+          <div className="relative w-full max-w-sm overflow-hidden rounded-[2rem] border border-[hsl(var(--primary)/0.3)] bg-gradient-to-b from-[hsl(var(--primary)/0.15)] to-black shadow-2xl p-6 text-center animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex flex-col items-center gap-4">
+              <div className="rounded-full bg-[hsl(var(--primary)/0.2)] p-4 text-[hsl(var(--primary))] shadow-[0_0_25px_hsl(var(--primary)/0.3)]">
+                <Handshake className="w-8 h-8" />
+              </div>
+
+              <div>
+                <h3 className="text-xl font-black uppercase tracking-widest text-[hsl(var(--primary))]">
+                  Vote to Cancel
+                </h3>
+                <p className="mt-2 text-sm text-white/80 font-medium">
+                  A player wants to cancel the match.
+                  <br />
+                  <span className="text-xs opacity-70">
+                    ({game?.endVotes?.length ?? 0}/{game?.activePlayers?.length ?? 0} Votes)
+                  </span>
+                </p>
+              </div>
+
+              <div className="flex w-full gap-3 mt-2">
+                <Button
+                  variant="ghost"
+                  className="flex-1 rounded-xl text-white/60 hover:text-white hover:bg-white/10"
+                  onClick={() => setShowVoteAnnouncementPopup(false)}
+                >
+                  Ignore
+                </Button>
+                <Button
+                  className="flex-1 rounded-xl bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))] font-bold shadow-lg shadow-[hsl(var(--primary)/0.2)]"
+                  onClick={handleOpenVoteDialogFromPopup}
+                >
+                  View Vote
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )
+    }
 
     {
       shouldShowChatDock && (

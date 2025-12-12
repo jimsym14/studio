@@ -44,6 +44,12 @@ export interface GameDocument {
   nextRoundVotes?: string[];
   rematchVotes?: string[];
   rematchGameId?: string;
+  // Extended fields for Timers
+  roundDeadline?: string | null;
+  roundTimeLimit?: number | null;
+  chessTimeLimit?: number | null;
+  playerTimers?: Record<string, number | null>;
+  turnStartedAt?: string | null;
 }
 
 export interface GameMatchState {

@@ -436,11 +436,27 @@ export default function LobbyPage() {
                   ? rotateOrderToPlayer(baseOrder, chosenTurnPlayer)
                   : baseOrder;
 
+                const roundMinutes = freshData.roundTimeLimit;
+                // const roundDeadline = roundMinutes ? addMinutesIso(new Date().toISOString(), roundMinutes) : null; // Paused
+                const nowIso = new Date().toISOString();
+
+                // Initialize Chess Timers for ALL players
+                const chessSeconds = freshData.chessTimeLimit || null;
+                const initialPlayerTimers: Record<string, number | null> = {};
+                if (chessSeconds && roster.length) {
+                  roster.forEach(pid => {
+                    initialPlayerTimers[pid] = chessSeconds;
+                  });
+                }
+
                 const updatePayload: Partial<GameDocument> & Record<string, unknown> = {
                   status: 'in_progress',
                   inactivityClosesAt: null,
                   matchHardStopAt:
-                    freshData.matchHardStopAt ?? addMinutesIso(new Date().toISOString(), MATCH_HARD_STOP_MINUTES),
+                    freshData.matchHardStopAt ?? addMinutesIso(nowIso, MATCH_HARD_STOP_MINUTES),
+                  roundDeadline: null,
+                  turnStartedAt: null,
+                  playerTimers: initialPlayerTimers,
                 };
 
                 if (!freshData.turnOrder?.length && rotatedOrder.length) {

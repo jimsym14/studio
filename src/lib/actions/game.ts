@@ -184,10 +184,22 @@ export async function createGame(
 
     const createdAt = new Date().toISOString();
     const initialStatus = gameSettings.gameType === 'multiplayer' ? 'waiting' : 'in_progress';
-    const matchMinutes = parseMinutes(gameSettings.matchTime);
-    const initialMatchDeadline = initialStatus === 'in_progress' && matchMinutes
-      ? addMinutes(createdAt, matchMinutes)
-      : null;
+    const roundMinutes = parseMinutes(gameSettings.matchTime);
+    const chessSeconds = parseSeconds(gameSettings.turnTime);
+
+    // Initial Round Deadline (formerly Match Deadline, now per round)
+    // Initial Round Deadline (Paused at start)
+    const currentRoundDeadline = null;
+
+    // Initial Chess Timers (Bank per player)
+    // If chessSeconds is set, every player starts with that many seconds.
+    // If unlimited, it's null.
+    const initialPlayerTimers: Record<string, number | null> = {};
+    if (chessSeconds) {
+      // Only Creator is in players initially
+      initialPlayerTimers[creatorId] = chessSeconds;
+    }
+
     const initialHardStop = initialStatus === 'in_progress'
       ? addMinutes(createdAt, MATCH_HARD_STOP_MINUTES)
       : null;
@@ -201,6 +213,9 @@ export async function createGame(
       isMatchOver: false,
       matchWinnerId: null,
       roundBonus: null,
+      // We store the computed deadlines/timers in matchState or root?
+      // Root is better for "current round state", but matchState tracks the match.
+      // Let's put round-specifics in game root as they reset every round.
     };
 
     const initialGameData = {
@@ -232,8 +247,15 @@ export async function createGame(
       lastActivityAt: createdAt,
       inactivityClosesAt: initialStatus === 'waiting' ? addMinutes(createdAt, WAITING_MINUTES) : null,
       matchHardStopAt: initialHardStop,
-      matchDeadline: initialMatchDeadline,
-      turnDeadline: null,
+
+      // Timer Fields
+      roundDeadline: currentRoundDeadline, // Replaces matchDeadline
+      roundTimeLimit: roundMinutes,        // Store limit for resets
+      chessTimeLimit: chessSeconds,        // Store limit for resets
+      playerTimers: initialPlayerTimers,   // Store current banks
+      turnStartedAt: null, // Paused until first move
+
+      turnDeadline: null, // Deprecated/Unused for Chess Clock logic
       completedAt: null,
       matchState,
     };
@@ -380,6 +402,20 @@ export async function advanceGameRound(
     };
   }
 
+  // Reset Timers for Next Round
+  const roundMinutes = gameData.roundTimeLimit || null;
+  // Paused at start of round:
+  const nextRoundDeadline = null;
+
+  // Reset Chess Timers
+  const chessSeconds = gameData.chessTimeLimit || null;
+  const nextPlayerTimers: Record<string, number | null> = {};
+  if (chessSeconds && gameData.players) {
+    for (const pid of gameData.players) {
+      nextPlayerTimers[pid as string] = chessSeconds;
+    }
+  }
+
   await gameRef.update({
     'matchState.scores': scores, // Update scores for the current round
     'matchState.draws': draws,   // Update draws for the current round
@@ -394,11 +430,118 @@ export async function advanceGameRound(
     winnerId: null, // Clear previous winner
     completionMessage: null, // Clear completion message
 
-    // Timers
+    // Timers Reset
     lastActivityAt: new Date().toISOString(),
-    matchDeadline: gameData.matchTime ? addMinutes(new Date().toISOString(), parseMinutes(gameData.matchTime)) : null,
-    turnDeadline: gameData.turnTime ? addSeconds(new Date().toISOString(), parseSeconds(gameData.turnTime)) : null,
+    roundDeadline: nextRoundDeadline,
+    playerTimers: nextPlayerTimers,
+    turnStartedAt: null, // Start fresh turn tracking (Paused)
+
+    // Cleanup old fields
+    matchDeadline: null,
+    turnDeadline: null,
   });
 
   return { success: true, isMatchOver: false };
+}
+
+export async function toggleEndVote(
+  gameId: string,
+  authToken: string
+) {
+  if (!gameId) throw new Error('Game ID is required');
+
+  // Verify Auth
+  let userId: string;
+  try {
+    const decoded = await adminAuth.verifyIdToken(authToken);
+    userId = decoded.uid;
+  } catch {
+    if (!shouldUseEmulators) throw new Error('Unauthorized');
+    userId = 'emulator_user'; // Fallback if emulating
+  }
+
+  const gameRef = adminDb.collection('games').doc(gameId);
+  const gameSnap = await gameRef.get();
+  if (!gameSnap.exists) throw new Error('Game not found');
+
+  const gameData = gameSnap.data() as any;
+  if (gameData.status === 'completed') {
+    return { success: false, message: 'Match is already over' };
+  }
+
+  const currentVotes = (gameData.endVotes || []) as string[];
+  const activePlayers = (gameData.activePlayers || []) as string[];
+
+  // Toggle Vote
+  let newVotes;
+  if (currentVotes.includes(userId)) {
+    newVotes = currentVotes.filter((id: string) => id !== userId);
+  } else {
+    newVotes = [...currentVotes, userId];
+  }
+
+  // Check for Unanimous Vote (among active players)
+  const activeCount = activePlayers.length;
+  const activeVoters = newVotes.filter((id: string) => activePlayers.includes(id));
+  const isUnanimous = activeCount > 0 && activeVoters.length >= activeCount;
+
+  if (isUnanimous) {
+    await gameRef.update({
+      endVotes: newVotes,
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+      winnerId: null,
+      'matchState.isMatchOver': true,
+      'matchState.matchWinnerId': null, // Explicit tie
+      completionMessage: 'Match Ended in a Tie (Mutual Agreement)',
+      endedBy: 'vote'
+    });
+    return { success: true, isMatchOver: true, cancelled: true };
+  } else {
+    await gameRef.update({
+      endVotes: newVotes
+    });
+    return { success: true, isMatchOver: false, voted: newVotes.includes(userId) };
+  }
+}
+
+export async function surrenderMatch(
+  gameId: string,
+  authToken: string
+) {
+  if (!gameId) throw new Error('Game ID is required');
+
+  // Verify Auth
+  let userId: string;
+  try {
+    const decoded = await adminAuth.verifyIdToken(authToken);
+    userId = decoded.uid;
+  } catch {
+    if (!shouldUseEmulators) throw new Error('Unauthorized');
+    userId = 'emulator_user';
+  }
+
+  const gameRef = adminDb.collection('games').doc(gameId);
+  const gameSnap = await gameRef.get();
+  if (!gameSnap.exists) throw new Error('Game not found');
+
+  const gameData = gameSnap.data() as any;
+  if (gameData.status === 'completed') {
+    return { success: false, message: 'Match is already over' };
+  }
+
+  // Find Winner (Anyone but me)
+  const otherPlayerId = (gameData.players || []).find((p: string) => p !== userId);
+
+  await gameRef.update({
+    status: 'completed',
+    completedAt: new Date().toISOString(),
+    winnerId: otherPlayerId || null,
+    'matchState.isMatchOver': true,
+    'matchState.matchWinnerId': otherPlayerId || null,
+    completionMessage: 'Match Concluded by Surrender',
+    endedBy: userId
+  });
+
+  return { success: true, isMatchOver: true };
 }
