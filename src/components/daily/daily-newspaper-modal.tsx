@@ -24,7 +24,25 @@ export function DailyNewspaperModal({ manualOpen, preventAutoOpen, onClose }: { 
     const [timeLeft, setTimeLeft] = useState("");
     const [hasCopied, setHasCopied] = useState(false);
     const [isSharing, setIsSharing] = useState(false);
+    const [dailySolverCount, setDailySolverCount] = useState<number | null>(null);
+    const [debugStreak, setDebugStreak] = useState<number | null>(null);
     const isMobile = useIsMobile();
+
+    // Use debug streak if set, otherwise real streak
+    const displayStreak = debugStreak !== null ? debugStreak : streak;
+
+    // Streak tier system
+    const getStreakTier = (s: number) => {
+        if (s >= 365) return 'godly';
+        if (s >= 180) return 'legendary';
+        if (s >= 30) return 'epic';
+        if (s >= 15) return 'great';
+        if (s >= 7) return 'good';
+        return 'none';
+    };
+
+    const streakTier = getStreakTier(displayStreak);
+    const isLocalhost = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
 
     const newspaperRef = useRef<HTMLDivElement>(null);
 
@@ -53,29 +71,51 @@ export function DailyNewspaperModal({ manualOpen, preventAutoOpen, onClose }: { 
         return () => clearInterval(timer);
     }, []);
 
+    // Fetch daily solver count
+    useEffect(() => {
+        const fetchSolverCount = async () => {
+            try {
+                const res = await fetch('/api/stats/daily-solvers');
+                if (res.ok) {
+                    const data = await res.json();
+                    setDailySolverCount(data.count ?? null);
+                }
+            } catch (e) {
+                console.warn('Failed to fetch daily solver count', e);
+            }
+        };
+        fetchSolverCount();
+    }, []);
+
     const handleShare = async () => {
         if (!process.browser || isSharing || !newspaperRef.current) return;
         setIsSharing(true);
 
         const title = `WordMates Daily ${dailyDate}`;
         const shareText = `Play at: ${window.location.origin}/daily`;
+        const playerName = profile?.username || user?.displayName || 'player';
+        const safePlayerName = playerName.replace(/[^a-zA-Z0-9_-]/g, '_').toLowerCase();
+        const filename = `wordmates-${safePlayerName}-${dailyDate}.png`;
 
         try {
             // Generate Image
-            // We need to ensure the font is loaded, usually fine.
-            // Using toBlob is efficient.
             const blob = await toBlob(newspaperRef.current, {
                 cacheBust: true,
                 style: {
-                    transform: 'scale(1)', // Ensure no weird transforms during capture if any
+                    transform: 'scale(1)',
                 }
             });
 
             if (!blob) throw new Error("Failed to generate image");
 
-            // Check if Web Share API supports files
-            if (navigator.share && navigator.canShare && navigator.canShare({ files: [new File([blob], 'daily-result.png', { type: blob.type })] })) {
-                const file = new File([blob], `wordmates-daily-${dailyDate}.png`, { type: 'image/png' });
+            // Check if Web Share API supports files (typically mobile iOS/Android)
+            const file = new File([blob], filename, { type: 'image/png' });
+            const canShareFiles = typeof navigator.share === 'function' &&
+                typeof navigator.canShare === 'function' &&
+                navigator.canShare({ files: [file] });
+
+            if (canShareFiles) {
+                // Use native share on iOS/Android
                 await navigator.share({
                     title: title,
                     text: shareText,
@@ -83,33 +123,34 @@ export function DailyNewspaperModal({ manualOpen, preventAutoOpen, onClose }: { 
                 });
                 setHasCopied(true);
             } else {
-                // Fallback to clipboard for image if supported (mostly desktop Chrome/Safari)
-                try {
-                    await navigator.clipboard.write([
-                        new ClipboardItem({
-                            [blob.type]: blob
-                        })
-                    ]);
-                    toast({ title: "Image copied to clipboard!", className: isLight ? "bg-black text-[#f4ebd0]" : "bg-[#e0d6b9] text-black" });
-                    setHasCopied(true);
-                } catch (clipboardErr) {
-                    // Last Resort Fallback: Text Only
-                    console.warn("Image copy failed, falling back to text", clipboardErr);
-                    const fallbackText = `${title}\n${isSolved ? 'Solved' : 'Missed'}! Streak: ${streak}\n${shareText}`;
-                    await navigator.clipboard.writeText(fallbackText);
-                    toast({ title: "Copied text to clipboard!", className: isLight ? "bg-black text-[#f4ebd0]" : "bg-[#e0d6b9] text-black" });
-                    setHasCopied(true);
-                }
+                // Desktop: Download the image
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = filename;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                URL.revokeObjectURL(url);
+
+                toast({ title: "Image downloaded!", className: isLight ? "bg-black text-[#f4ebd0]" : "bg-[#e0d6b9] text-black" });
+                setHasCopied(true);
             }
 
             setTimeout(() => setHasCopied(false), 2000);
         } catch (err) {
-            console.error("Failed to share", err);
-            toast({ title: "Failed to share result", variant: "destructive" });
+            // User cancelled share dialog is not an error
+            if (err instanceof Error && err.name === 'AbortError') {
+                // User cancelled - do nothing
+            } else {
+                console.error("Failed to share", err);
+                toast({ title: "Failed to share result", variant: "destructive" });
+            }
         } finally {
             setIsSharing(false);
         }
     };
+
 
     useEffect(() => {
         if (manualOpen) {
@@ -194,6 +235,50 @@ export function DailyNewspaperModal({ manualOpen, preventAutoOpen, onClose }: { 
                     </div>
                 )}
 
+                {/* Flame Effects based on streak tier */}
+                {streakTier !== 'none' && hasPlayedToday && isSolved && (
+                    <div className="absolute inset-0 pointer-events-none overflow-hidden z-20">
+                        {/* Fire particles */}
+                        {Array.from({ length: streakTier === 'godly' ? 30 : streakTier === 'legendary' ? 20 : streakTier === 'epic' ? 15 : streakTier === 'great' ? 10 : 6 }).map((_, i) => (
+                            <motion.div
+                                key={i}
+                                className={cn(
+                                    "absolute w-3 h-3 rounded-full blur-sm",
+                                    streakTier === 'godly' ? "bg-gradient-to-t from-violet-500 via-fuchsia-400 to-white" :
+                                        streakTier === 'legendary' ? "bg-gradient-to-t from-blue-500 via-cyan-400 to-white" :
+                                            streakTier === 'epic' ? "bg-gradient-to-t from-purple-500 via-pink-400 to-white" :
+                                                streakTier === 'great' ? "bg-gradient-to-t from-orange-600 via-yellow-400 to-white" :
+                                                    "bg-gradient-to-t from-orange-500 via-orange-300 to-yellow-200"
+                                )}
+                                style={{
+                                    left: `${10 + Math.random() * 80}%`,
+                                    bottom: '-10px',
+                                }}
+                                animate={{
+                                    y: [0, -150 - Math.random() * 100],
+                                    x: [0, (Math.random() - 0.5) * 60],
+                                    opacity: [0.8, 0],
+                                    scale: [1, 0.3],
+                                }}
+                                transition={{
+                                    duration: 1.5 + Math.random() * 1,
+                                    repeat: Infinity,
+                                    delay: Math.random() * 2,
+                                    ease: "easeOut",
+                                }}
+                            />
+                        ))}
+                        {/* Glow effect for godly tier */}
+                        {streakTier === 'godly' && (
+                            <motion.div
+                                className="absolute inset-0 bg-gradient-to-t from-violet-500/30 via-transparent to-transparent"
+                                animate={{ opacity: [0.3, 0.6, 0.3] }}
+                                transition={{ duration: 2, repeat: Infinity }}
+                            />
+                        )}
+                    </div>
+                )}
+
 
                 <motion.div
                     ref={newspaperRef}
@@ -227,31 +312,62 @@ export function DailyNewspaperModal({ manualOpen, preventAutoOpen, onClose }: { 
                     {/* Content Body */}
                     <div className="p-4 sm:p-6">
                         {hasPlayedToday ? (
-                            <div className="flex flex-col items-center gap-4 sm:gap-6 text-center">
-                                <div className="rounded-full border-4 border-black p-3 sm:p-4 shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] sm:shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
-                                    {isSolved ? <Trophy className="h-8 w-8 sm:h-12 sm:w-12" /> : <X className="h-8 w-8 sm:h-12 sm:w-12" />}
+                            <div className="flex flex-col items-center gap-3 sm:gap-4 text-center">
+                                <h3 className="font-serif text-lg sm:text-xl font-bold uppercase">
+                                    {isSolved ? 'EXTRA! EXTRA! YOU DID IT!' : 'SCANDAL! WORD MISSED!'}
+                                </h3>
+
+                                {/* Word with inline icon */}
+                                <p className="text-xs sm:text-sm font-bold uppercase tracking-wider opacity-60">The word was</p>
+                                <div className="flex items-center justify-center gap-2">
+                                    <div className="rounded-full border-2 border-black bg-white p-1.5 shadow-[1px_1px_0px_0px_rgba(0,0,0,1)]">
+                                        {isSolved ? <Trophy className="h-4 w-4 sm:h-5 sm:w-5" /> : <X className="h-4 w-4 sm:h-5 sm:w-5" />}
+                                    </div>
+                                    <div className="flex gap-0.5 sm:gap-1">
+                                        {dailyWord.toUpperCase().split('').map((letter, idx) => (
+                                            <div
+                                                key={idx}
+                                                className={cn(
+                                                    "w-8 h-8 sm:w-10 sm:h-10 flex items-center justify-center text-base sm:text-lg font-black border-2 border-black shadow-[1px_1px_0px_0px_rgba(0,0,0,1)]",
+                                                    isSolved ? "bg-[#6aaa64] text-white" : "bg-[#787c7e] text-white"
+                                                )}
+                                            >
+                                                {letter}
+                                            </div>
+                                        ))}
+                                    </div>
                                 </div>
 
-                                <div className="space-y-1 sm:space-y-2">
-                                    <h3 className="font-serif text-xl sm:text-2xl font-bold uppercase">
-                                        {isSolved ? 'EXTRA! EXTRA! YOU DID IT!' : 'SCANDAL! WORD MISSED!'}
-                                    </h3>
-                                    <p className="font-serif text-base sm:text-lg leading-tight sm:leading-snug">
-                                        {isSolved
-                                            ? `Statistics confirm: You are a genius. The word was indeed "${dailyWord.toUpperCase()}".`
-                                            : `Sources say the word was "${dailyWord.toUpperCase()}". Better luck next time.`
-                                        }
-                                    </p>
-                                </div>
+                                <p className="font-serif text-xs sm:text-sm leading-tight opacity-70">
+                                    {isSolved
+                                        ? "Statistics confirm: You are a genius."
+                                        : "Better luck next time, champion."
+                                    }
+                                </p>
 
-                                <div className="grid w-full grid-cols-2 gap-3 sm:gap-4 border-t-2 border-black pt-3 sm:pt-4">
+                                <div className="grid w-full grid-cols-2 gap-2 sm:gap-3 border-t-2 border-black pt-2 sm:pt-3">
                                     <div className="flex flex-col items-center border-r-2 border-black">
-                                        <span className="text-2xl sm:text-3xl font-black">{streak}</span>
-                                        <span className="text-[10px] sm:text-xs font-bold uppercase tracking-widest">Day Streak</span>
+                                        <div className="flex items-center gap-1">
+                                            <span className="text-xl sm:text-2xl font-black">{displayStreak}</span>
+                                            {streakTier !== 'none' && (
+                                                <span className={cn(
+                                                    "text-base sm:text-lg",
+                                                    streakTier === 'godly' ? "animate-pulse" : ""
+                                                )}>
+                                                    {streakTier === 'godly' ? '👑' :
+                                                        streakTier === 'legendary' ? '💎' :
+                                                            streakTier === 'epic' ? '⚡' :
+                                                                streakTier === 'great' ? '🔥' : '✨'}
+                                                </span>
+                                            )}
+                                        </div>
+                                        <span className="text-[9px] sm:text-[10px] font-bold uppercase tracking-widest">Streak</span>
                                     </div>
                                     <div className="flex flex-col items-center">
-                                        <span className="text-2xl sm:text-3xl font-black">?</span>
-                                        <span className="text-[10px] sm:text-xs font-bold uppercase tracking-widest">Global Solvers</span>
+                                        <span className="text-xl sm:text-2xl font-black">
+                                            {dailySolverCount !== null ? dailySolverCount.toLocaleString() : '—'}
+                                        </span>
+                                        <span className="text-[9px] sm:text-[10px] font-bold uppercase tracking-widest">Solved Today</span>
                                     </div>
                                 </div>
 
@@ -265,7 +381,7 @@ export function DailyNewspaperModal({ manualOpen, preventAutoOpen, onClose }: { 
                                         )}
                                     >
                                         {isSharing ? (
-                                            <span className="animate-pulse">Generating...</span>
+                                            <span>@{profile?.username || user?.displayName || 'WORDMATES'}</span>
                                         ) : (
                                             <>
                                                 {hasCopied ? <Check className="h-4 w-4 sm:h-5 sm:w-5" /> : <Share2 className="h-4 w-4 sm:h-5 sm:w-5" />}
@@ -322,12 +438,33 @@ export function DailyNewspaperModal({ manualOpen, preventAutoOpen, onClose }: { 
                         onClick={handleClose}
                         whileHover={{ scale: 1.1, rotate: 90 }}
                         whileTap={{ scale: 0.9, rotate: 90 }}
-                        className="absolute right-[-8px] top-[-8px] sm:right-[-12px] sm:top-[-12px] z-50 rounded-full border-2 border-black bg-white p-1.5 sm:p-2 text-black shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] sm:shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:bg-[#ff5555] hover:text-white transition-colors"
+                        className="absolute right-2 top-2 sm:right-3 sm:top-3 z-50 rounded-full border-2 border-black bg-white p-1 sm:p-1.5 text-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] hover:bg-[#ff5555] hover:text-white transition-colors"
                         aria-label="Close"
                     >
-                        <X className="h-4 w-4 sm:h-5 sm:w-5 stroke-[3]" />
+                        <X className="h-3.5 w-3.5 sm:h-4 sm:w-4 stroke-[3]" />
                     </motion.button>
                 </motion.div>
+
+                {/* Debug buttons - localhost only */}
+                {isLocalhost && (
+                    <div className="absolute bottom-[-60px] left-0 right-0 flex flex-wrap justify-center gap-1 z-50">
+                        <span className="text-white text-[10px] font-bold mr-2">DEBUG:</span>
+                        {[0, 7, 15, 30, 180, 365].map((val) => (
+                            <button
+                                key={val}
+                                onClick={() => setDebugStreak(val === 0 ? null : val)}
+                                className={cn(
+                                    "px-2 py-0.5 text-[10px] font-bold rounded border",
+                                    (debugStreak === val || (val === 0 && debugStreak === null))
+                                        ? "bg-white text-black border-white"
+                                        : "bg-transparent text-white border-white/50 hover:bg-white/20"
+                                )}
+                            >
+                                {val === 0 ? 'Reset' : val}
+                            </button>
+                        ))}
+                    </div>
+                )}
             </DialogContent>
         </Dialog>
     );
