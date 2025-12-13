@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo } from 'react';
 import { Lock } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { GuessScore } from '@/lib/wordle';
@@ -35,7 +35,25 @@ const tileTone: Record<GuessScore, string> = {
     absent: 'bg-muted text-muted-foreground',
 };
 
-export function GameGrid({
+// Global CSS moved outside component to avoid re-processing on every render
+const gridStyles = `
+    @keyframes newspaper-slam-light {
+        0% { transform: translate(-4px, -4px); box-shadow: 8px 8px 0 0 rgba(0,0,0,1); }
+        100% { transform: translate(0, 0); box-shadow: 2px 2px 0 0 rgba(0,0,0,1); }
+    }
+    @keyframes newspaper-slam-dark {
+        0% { transform: translate(-4px, -4px); box-shadow: 8px 8px 0 0 rgba(255,255,255,1); }
+        100% { transform: translate(0, 0); box-shadow: 2px 2px 0 0 rgba(255,255,255,1); }
+    }
+    .animate-newspaper-slam {
+        animation: newspaper-slam-light 0.15s ease-out forwards;
+    }
+    .dark .animate-newspaper-slam {
+        animation: newspaper-slam-dark 0.15s ease-out forwards;
+    }
+`;
+
+function GameGridComponent({
     wordLength,
     rows,
     isLightMode,
@@ -53,22 +71,7 @@ export function GameGrid({
 }: GameGridProps) {
     return (
         <div className="grid gap-2">
-            <style jsx global>{`
-                @keyframes newspaper-slam-light {
-                    0% { transform: translate(-4px, -4px); box-shadow: 8px 8px 0 0 rgba(0,0,0,1); }
-                    100% { transform: translate(0, 0); box-shadow: 2px 2px 0 0 rgba(0,0,0,1); }
-                }
-                @keyframes newspaper-slam-dark {
-                    0% { transform: translate(-4px, -4px); box-shadow: 8px 8px 0 0 rgba(255,255,255,1); }
-                    100% { transform: translate(0, 0); box-shadow: 2px 2px 0 0 rgba(255,255,255,1); }
-                }
-                .animate-newspaper-slam {
-                    animation: newspaper-slam-light 0.15s ease-out forwards;
-                }
-                .dark .animate-newspaper-slam {
-                    animation: newspaper-slam-dark 0.15s ease-out forwards;
-                }
-            `}</style>
+            <style jsx global>{gridStyles}</style>
             {rows.map((row, rowIndex) => {
                 return (
                     <div
@@ -184,3 +187,67 @@ export function GameGrid({
         </div>
     );
 }
+
+// Helper to compare rows arrays
+function areRowsEqual(prevRows: GridRow[], nextRows: GridRow[]): boolean {
+    if (prevRows.length !== nextRows.length) return false;
+    for (let i = 0; i < prevRows.length; i++) {
+        const prev = prevRows[i];
+        const next = nextRows[i];
+        if (prev.state !== next.state) return false;
+        if (prev.isPeerInput !== next.isPeerInput) return false;
+        if (prev.letters.join('') !== next.letters.join('')) return false;
+        if (prev.evaluations.join(',') !== next.evaluations.join(',')) return false;
+    }
+    return true;
+}
+
+// Helper to compare Sets
+function areSetsEqual(a: Set<number>, b: Set<number>): boolean {
+    if (a.size !== b.size) return false;
+    for (const item of a) {
+        if (!b.has(item)) return false;
+    }
+    return true;
+}
+
+// Helper to compare revealedTiles records
+function areRecordsEqual(a: Record<string, boolean>, b: Record<string, boolean>): boolean {
+    const keysA = Object.keys(a);
+    const keysB = Object.keys(b);
+    if (keysA.length !== keysB.length) return false;
+    for (const key of keysA) {
+        if (a[key] !== b[key]) return false;
+    }
+    return true;
+}
+
+// Custom comparison for memo - handles special types
+function arePropsEqual(prevProps: GameGridProps, nextProps: GameGridProps): boolean {
+    // Simple primitive comparisons
+    if (prevProps.wordLength !== nextProps.wordLength) return false;
+    if (prevProps.isLightMode !== nextProps.isLightMode) return false;
+    if (prevProps.selectedIndex !== nextProps.selectedIndex) return false;
+    if (prevProps.variant !== nextProps.variant) return false;
+
+    // tilePulse comparison (object or null)
+    if (prevProps.tilePulse?.index !== nextProps.tilePulse?.index) return false;
+    if (prevProps.tilePulse?.id !== nextProps.tilePulse?.id) return false;
+
+    // Special types
+    if (!areSetsEqual(prevProps.lockedIndices, nextProps.lockedIndices)) return false;
+    if (!areRecordsEqual(prevProps.revealedTiles, nextProps.revealedTiles)) return false;
+    if (!areRowsEqual(prevProps.rows, nextProps.rows)) return false;
+
+    // Callbacks - compare by reference (they should be memoized by parent)
+    if (prevProps.onTileClick !== nextProps.onTileClick) return false;
+    if (prevProps.onTileTouchStart !== nextProps.onTileTouchStart) return false;
+    if (prevProps.onTileTouchEnd !== nextProps.onTileTouchEnd) return false;
+    if (prevProps.onTileMouseDown !== nextProps.onTileMouseDown) return false;
+    if (prevProps.onTileMouseUp !== nextProps.onTileMouseUp) return false;
+    if (prevProps.onTileMouseLeave !== nextProps.onTileMouseLeave) return false;
+
+    return true;
+}
+
+export const GameGrid = memo(GameGridComponent, arePropsEqual);
