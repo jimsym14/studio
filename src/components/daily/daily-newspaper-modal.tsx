@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { toast } from '@/hooks/use-toast';
 import { useRouter } from 'next/navigation';
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from '@/components/ui/dialog';
@@ -27,22 +28,77 @@ export function DailyNewspaperModal({ manualOpen, preventAutoOpen, onClose }: { 
     const [dailySolverCount, setDailySolverCount] = useState<number | null>(null);
     const [debugStreak, setDebugStreak] = useState<number | null>(null);
     const isMobile = useIsMobile();
+    const isLight = theme === 'light';
 
     // Use debug streak if set, otherwise real streak
-    const displayStreak = debugStreak !== null ? debugStreak : streak;
+    const displayStreak = debugStreak ?? streak;
 
-    // Streak tier system
-    const getStreakTier = (s: number) => {
-        if (s >= 365) return 'godly';
-        if (s >= 180) return 'legendary';
-        if (s >= 30) return 'epic';
-        if (s >= 15) return 'great';
-        if (s >= 7) return 'good';
+    // Determine streak tier for effects
+    const getStreakTier = (s: number): 'legendary' | 'master' | 'veteran' | 'blazing' | 'none' => {
+        if (s >= 365) return 'legendary';
+        if (s >= 180) return 'master';
+        if (s >= 30) return 'veteran';
+        if (s >= 7) return 'blazing';
         return 'none';
     };
 
     const streakTier = getStreakTier(displayStreak);
-    const isLocalhost = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+    const isLocalhost = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || window.location.hostname === '192.168.1.9');
+
+    // Memoize perimeter flames to prevent random color recalculation on every render
+    // Dependencies: displayStreak and isMobile (for count optimization)
+    const perimeterFlames = useMemo(() => {
+        if (displayStreak < 7) return [];
+
+        // Determine current and next color based on streak tier
+        type FlameColor = 'orange' | 'purple' | 'blue' | 'violet';
+        let currentColor: FlameColor = 'orange';
+        let nextColor: FlameColor = 'purple';
+        let progress = 0;
+
+        if (displayStreak >= 365) {
+            currentColor = 'violet';
+            nextColor = 'violet';
+            progress = 1;
+        } else if (displayStreak >= 180) {
+            currentColor = 'blue';
+            nextColor = 'violet';
+            progress = (displayStreak - 180) / (365 - 180);
+        } else if (displayStreak >= 30) {
+            currentColor = 'purple';
+            nextColor = 'blue';
+            progress = (displayStreak - 30) / (180 - 30);
+        } else if (displayStreak >= 15) {
+            currentColor = 'orange';
+            nextColor = 'purple';
+            progress = (displayStreak - 15) / (30 - 15);
+        } else {
+            currentColor = 'orange';
+            nextColor = 'orange';
+            progress = 0;
+        }
+
+        // Use fewer flames on mobile for performance (8 per side vs 20)
+        const flamesPerSide = isMobile ? 8 : 20;
+        const flames: { color: FlameColor; edge: 'left' | 'right'; position: number }[] = [];
+
+        const edges: ('left' | 'right')[] = ['left', 'right'];
+        edges.forEach((edge, edgeIdx) => {
+            for (let i = 0; i < flamesPerSide; i++) {
+                // Use deterministic color assignment based on index and progress
+                // This prevents random recalculation on every render
+                const colorThreshold = Math.floor(progress * flamesPerSide);
+                const useNextColor = i < colorThreshold;
+                flames.push({
+                    color: useNextColor ? nextColor : currentColor,
+                    edge,
+                    position: (i / flamesPerSide) * 100,
+                });
+            }
+        });
+
+        return flames;
+    }, [displayStreak, isMobile]);
 
     const newspaperRef = useRef<HTMLDivElement>(null);
 
@@ -185,7 +241,6 @@ export function DailyNewspaperModal({ manualOpen, preventAutoOpen, onClose }: { 
         handleClose();
     };
 
-    const isLight = theme === 'light';
 
     return (
         <Dialog open={isOpen} onOpenChange={(open) => !open && handleClose()}>
@@ -235,50 +290,170 @@ export function DailyNewspaperModal({ manualOpen, preventAutoOpen, onClose }: { 
                     </div>
                 )}
 
-                {/* Flame Effects based on streak tier */}
+                {/* Floating Emoji - Different per tier */}
                 {streakTier !== 'none' && hasPlayedToday && isSolved && (
-                    <div className="absolute inset-0 pointer-events-none overflow-hidden z-20">
-                        {/* Fire particles */}
-                        {Array.from({ length: streakTier === 'godly' ? 30 : streakTier === 'legendary' ? 20 : streakTier === 'epic' ? 15 : streakTier === 'great' ? 10 : 6 }).map((_, i) => (
-                            <motion.div
-                                key={i}
-                                className={cn(
-                                    "absolute w-3 h-3 rounded-full blur-sm",
-                                    streakTier === 'godly' ? "bg-gradient-to-t from-violet-500 via-fuchsia-400 to-white" :
-                                        streakTier === 'legendary' ? "bg-gradient-to-t from-blue-500 via-cyan-400 to-white" :
-                                            streakTier === 'epic' ? "bg-gradient-to-t from-purple-500 via-pink-400 to-white" :
-                                                streakTier === 'great' ? "bg-gradient-to-t from-orange-600 via-yellow-400 to-white" :
-                                                    "bg-gradient-to-t from-orange-500 via-orange-300 to-yellow-200"
-                                )}
-                                style={{
-                                    left: `${10 + Math.random() * 80}%`,
-                                    bottom: '-10px',
-                                }}
-                                animate={{
-                                    y: [0, -150 - Math.random() * 100],
-                                    x: [0, (Math.random() - 0.5) * 60],
-                                    opacity: [0.8, 0],
-                                    scale: [1, 0.3],
-                                }}
-                                transition={{
-                                    duration: 1.5 + Math.random() * 1,
-                                    repeat: Infinity,
-                                    delay: Math.random() * 2,
-                                    ease: "easeOut",
-                                }}
-                            />
-                        ))}
-                        {/* Glow effect for godly tier */}
-                        {streakTier === 'godly' && (
-                            <motion.div
-                                className="absolute inset-0 bg-gradient-to-t from-violet-500/30 via-transparent to-transparent"
-                                animate={{ opacity: [0.3, 0.6, 0.3] }}
-                                transition={{ duration: 2, repeat: Infinity }}
-                            />
+                    <motion.div
+                        className="absolute top-[-45px] left-1/2 z-30 text-4xl sm:text-5xl"
+                        initial={{ y: -80, x: '-50%', opacity: 0 }}
+                        animate={{
+                            y: 0,
+                            x: '-50%',
+                            opacity: 1,
+                        }}
+                        transition={{
+                            duration: 1,
+                            ease: "easeOut",
+                            delay: 0.5,
+                        }}
+                    >
+                        <motion.div
+                            animate={{
+                                y: [-3, 3, -3],
+                                rotate: [-3, 3, -3],
+                            }}
+                            transition={{
+                                duration: 2,
+                                repeat: Infinity,
+                                ease: "easeInOut",
+                                delay: 1.5,
+                            }}
+                            style={{
+                                filter: `drop-shadow(0 0 12px ${streakTier === 'legendary' ? '#fbbf24' :
+                                    streakTier === 'master' ? '#a855f7' :
+                                        '#f97316'
+                                    }) drop-shadow(0 0 24px ${streakTier === 'legendary' ? '#f59e0b' :
+                                        streakTier === 'master' ? '#7c3aed' :
+                                            '#ea580c'
+                                    })`
+                            }}
+                        >
+                            {streakTier === 'legendary' ? '👑' :
+                                streakTier === 'master' ? '⚡' : '🔥'}
+                        </motion.div>
+                    </motion.div>
+                )}
+
+                {/* Background Glow - Only for 180+ (master) and 365 (legendary) */}
+                {(streakTier === 'legendary' || streakTier === 'master') && hasPlayedToday && isSolved && (
+                    <motion.div
+                        className={cn(
+                            "absolute inset-[-30%] rounded-full blur-3xl -z-10",
+                            streakTier === 'legendary' ? "bg-gradient-radial from-violet-500/50 via-fuchsia-500/25 to-transparent" :
+                                "bg-gradient-radial from-cyan-500/50 via-blue-500/25 to-transparent"
                         )}
+                        animate={{
+                            scale: [1, 1.2, 1],
+                            opacity: [0.5, 0.8, 0.5]
+                        }}
+                        transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
+                    />
+                )}
+
+                {/* 7-Day Streak Roadmap - for streaks less than 7 */}
+                {displayStreak < 7 && hasPlayedToday && isSolved && (
+                    <div className="absolute top-[-50px] left-1/2 -translate-x-1/2 flex items-center gap-0.5 z-20">
+                        {Array.from({ length: 7 }).map((_, i) => (
+                            <div key={`roadmap-${i}`} className="flex items-center">
+                                {/* Flame emoji for completed, empty circle for remaining */}
+                                {i < displayStreak ? (
+                                    <motion.div
+                                        className="text-lg sm:text-xl"
+                                        animate={{ scale: [1, 1.2, 1] }}
+                                        transition={{ duration: 1, repeat: Infinity, delay: i * 0.1 }}
+                                        style={{ filter: 'drop-shadow(0 0 4px rgba(249,115,22,0.8))' }}
+                                    >
+                                        🔥
+                                    </motion.div>
+                                ) : (
+                                    <div className="w-5 h-5 sm:w-6 sm:h-6 rounded-full border-2 border-gray-400 bg-transparent" />
+                                )}
+                                {/* Connecting line (except after last) */}
+                                {i < 6 && (
+                                    <div
+                                        className={cn(
+                                            "w-3 sm:w-4 h-0.5",
+                                            i < displayStreak - 1 ? "bg-orange-500" : "bg-gray-400"
+                                        )}
+                                    />
+                                )}
+                            </div>
+                        ))}
                     </div>
                 )}
 
+                {/* Full-Screen Perimeter Flames - for streaks 7+ (rendered via portal to bypass dialog transform) */}
+                {perimeterFlames.length > 0 && hasPlayedToday && isSolved && typeof document !== 'undefined' && createPortal(
+                    <div className="fixed inset-0 pointer-events-none z-40 overflow-hidden">
+                        {perimeterFlames.map((flame, i) => {
+                            const colorMap = {
+                                orange: { outer: '#f97316', middle: '#fbbf24', inner: '#fff', glow: '#f97316' },
+                                purple: { outer: '#a855f7', middle: '#d8b4fe', inner: '#fff', glow: '#c084fc' },
+                                blue: { outer: '#06b6d4', middle: '#67e8f9', inner: '#fff', glow: '#22d3ee' },
+                                violet: { outer: '#8b5cf6', middle: '#c084fc', inner: '#fef3c7', glow: '#a855f7' },
+                            };
+                            const colors = colorMap[flame.color];
+
+                            // Position and rotation based on edge
+                            let positionStyle: React.CSSProperties = {};
+                            let rotation = 0;
+
+                            if (flame.edge === 'left') {
+                                positionStyle = { left: -40, top: `${flame.position}%` };
+                                rotation = 90; // Point right (inward)
+                            } else if (flame.edge === 'right') {
+                                positionStyle = { right: -40, top: `${flame.position}%` };
+                                rotation = 270; // Point left (inward)
+                            }
+
+                            return (
+                                <div
+                                    key={`perimeter-flame-${flame.edge}-${i}`}
+                                    className="absolute"
+                                    style={{
+                                        ...positionStyle,
+                                        transform: `rotate(${rotation}deg)`,
+                                    }}
+                                >
+                                    <motion.div
+                                        animate={{
+                                            scaleY: [0.5, 1.2, 0.6, 1, 0.5],
+                                            scaleX: [1, 0.8, 1.15, 0.85, 1],
+                                        }}
+                                        transition={{
+                                            duration: 0.7 + (i % 5) * 0.1,
+                                            repeat: Infinity,
+                                            ease: "easeInOut",
+                                            delay: (i % 8) * 0.12,
+                                        }}
+                                    >
+                                        <svg
+                                            viewBox="0 0 50 120"
+                                            className="w-14 h-28 sm:w-24 sm:h-48 drop-shadow-lg"
+                                            style={{ filter: `drop-shadow(0 0 15px ${colors.glow})` }}
+                                        >
+                                            <path
+                                                d="M25 0 C32 30 50 45 42 75 C38 95 32 110 25 120 C18 110 12 95 8 75 C0 45 18 30 25 0"
+                                                fill={colors.outer}
+                                                opacity="0.9"
+                                            />
+                                            <path
+                                                d="M25 20 C30 40 42 52 36 72 C33 85 30 95 25 105 C20 95 17 85 14 72 C8 52 20 40 25 20"
+                                                fill={colors.middle}
+                                                opacity="0.85"
+                                            />
+                                            <path
+                                                d="M25 45 C27 55 34 62 30 75 C28 82 27 88 25 92 C23 88 22 82 20 75 C16 62 23 55 25 45"
+                                                fill={colors.inner}
+                                                opacity="0.95"
+                                            />
+                                        </svg>
+                                    </motion.div>
+                                </div>
+                            );
+                        })}
+                    </div>,
+                    document.body
+                )}
 
                 <motion.div
                     ref={newspaperRef}
@@ -289,13 +464,12 @@ export function DailyNewspaperModal({ manualOpen, preventAutoOpen, onClose }: { 
                         ease: [0.5, 0, 1, 1], // Custom bezier for slow start, fast end (accelerating)
                     }}
                     className={cn(
-                        "relative overflow-hidden border-4 will-change-transform",
+                        "relative overflow-hidden border-4 will-change-transform z-10",
                         // Less intense shadow on mobile for performance
                         isMobile ? "shadow-lg animate-in zoom-in-50 fade-in-0 duration-500 ease-out" : "shadow-2xl",
                         isLight ? "bg-[#f4ebd0] border-[#2b1409] text-[#2b1409]" : "bg-[#e0d6b9] border-black text-black"
                     )}
                 >
-
                     {/* Newspaper Header */}
                     <div className="border-b-4 border-black p-3 sm:p-4 text-center relative z-10">
                         <div className="flex items-center justify-center border-b-2 border-black pb-2">
@@ -320,9 +494,6 @@ export function DailyNewspaperModal({ manualOpen, preventAutoOpen, onClose }: { 
                                 {/* Word with inline icon */}
                                 <p className="text-xs sm:text-sm font-bold uppercase tracking-wider opacity-60">The word was</p>
                                 <div className="flex items-center justify-center gap-2">
-                                    <div className="rounded-full border-2 border-black bg-white p-1.5 shadow-[1px_1px_0px_0px_rgba(0,0,0,1)]">
-                                        {isSolved ? <Trophy className="h-4 w-4 sm:h-5 sm:w-5" /> : <X className="h-4 w-4 sm:h-5 sm:w-5" />}
-                                    </div>
                                     <div className="flex gap-0.5 sm:gap-1">
                                         {dailyWord.toUpperCase().split('').map((letter, idx) => (
                                             <div
@@ -349,25 +520,26 @@ export function DailyNewspaperModal({ manualOpen, preventAutoOpen, onClose }: { 
                                     <div className="flex flex-col items-center border-r-2 border-black">
                                         <div className="flex items-center gap-1">
                                             <span className="text-xl sm:text-2xl font-black">{displayStreak}</span>
-                                            {streakTier !== 'none' && (
-                                                <span className={cn(
-                                                    "text-base sm:text-lg",
-                                                    streakTier === 'godly' ? "animate-pulse" : ""
-                                                )}>
-                                                    {streakTier === 'godly' ? '👑' :
-                                                        streakTier === 'legendary' ? '💎' :
-                                                            streakTier === 'epic' ? '⚡' :
-                                                                streakTier === 'great' ? '🔥' : '✨'}
-                                                </span>
-                                            )}
                                         </div>
                                         <span className="text-[9px] sm:text-[10px] font-bold uppercase tracking-widest">Streak</span>
                                     </div>
                                     <div className="flex flex-col items-center">
-                                        <span className="text-xl sm:text-2xl font-black">
-                                            {dailySolverCount !== null ? dailySolverCount.toLocaleString() : '—'}
-                                        </span>
-                                        <span className="text-[9px] sm:text-[10px] font-bold uppercase tracking-widest">Solved Today</span>
+                                        {dailySolverCount !== null ? (
+                                            <>
+                                                <span className="text-[9px] sm:text-[10px] font-bold uppercase tracking-widest">You were the</span>
+                                                <span className="text-xl sm:text-2xl font-black">
+                                                    {(dailySolverCount + 1).toLocaleString()}{(() => {
+                                                        const n = dailySolverCount + 1;
+                                                        const s = ['th', 'st', 'nd', 'rd'];
+                                                        const v = n % 100;
+                                                        return s[(v - 20) % 10] || s[v] || s[0];
+                                                    })()}
+                                                </span>
+                                                <span className="text-[9px] sm:text-[10px] font-bold uppercase tracking-widest">to solve!</span>
+                                            </>
+                                        ) : (
+                                            <span className="text-lg sm:text-xl font-black">—</span>
+                                        )}
                                     </div>
                                 </div>
 
@@ -463,9 +635,15 @@ export function DailyNewspaperModal({ manualOpen, preventAutoOpen, onClose }: { 
                                 {val === 0 ? 'Reset' : val}
                             </button>
                         ))}
+                        <button
+                            onClick={() => setDebugStreak(Math.floor(Math.random() * 365) + 1)}
+                            className="px-2 py-0.5 text-[10px] font-bold rounded border bg-gradient-to-r from-orange-500 via-purple-500 to-cyan-500 text-white border-white/50 hover:opacity-80"
+                        >
+                            🎲 Rand
+                        </button>
                     </div>
                 )}
             </DialogContent>
-        </Dialog>
+        </Dialog >
     );
 }
