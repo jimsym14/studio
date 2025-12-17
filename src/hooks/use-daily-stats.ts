@@ -12,7 +12,7 @@ interface DailyStatsHook {
     streak: number;
     maxStreak: number;
     hasPlayedToday: boolean;
-    history: Record<string, { word: string; guesses: number; result: 'won' | 'lost' }>;
+    history: Record<string, { word: string; guesses: number; result: 'won' | 'lost'; solveRank?: number | null }>;
     savedGuesses: { word: string; evaluations: any[] }[] | null;
     recordWin: (guesses: number) => Promise<void>;
     recordLoss: () => Promise<void>;
@@ -61,6 +61,22 @@ export function useDailyStats(user: UserProfile | null | undefined): DailyStatsH
 
         const newMaxStreak = Math.max(newStreak, daily?.maxStreak || 0);
 
+        // Get the solve rank from the API (atomic increment)
+        let solveRank: number | null = null;
+        try {
+            const res = await fetch('/api/stats/record-solve', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userId: user.uid, date: dailyDate })
+            });
+            if (res.ok) {
+                const data = await res.json();
+                solveRank = data.rank;
+            }
+        } catch (e) {
+            console.warn('Failed to get solve rank', e);
+        }
+
         await updateDoc(userRef, {
             'daily.lastSolvedDate': dailyDate,
             'daily.streak': newStreak,
@@ -68,7 +84,8 @@ export function useDailyStats(user: UserProfile | null | undefined): DailyStatsH
             [`daily.history.${dailyDate}`]: {
                 word: dailyWord,
                 guesses,
-                result: 'won'
+                result: 'won',
+                solveRank: solveRank
             }
         });
     };
