@@ -340,10 +340,10 @@ export function DailyNewspaperModal({ manualOpen, preventAutoOpen, onClose }: { 
                                 isClosing ? "opacity-0" : "animate-in fade-in duration-500 ease-out"
                             )}
                             style={{
-                                // Tier-colored tint using particleConfig colors (same as desktop glow)
+                                // Tier-colored tint using particleConfig colors (darker for mobile visibility)
                                 backgroundColor: displayStreak > 0
-                                    ? `${particleConfig.gradientColors.from}${isLight ? '50' : '70'}`
-                                    : (isLight ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.5)'),
+                                    ? `${particleConfig.gradientColors.from}${isLight ? '80' : '99'}` // 80 = 50% opacity, 99 = 60% opacity
+                                    : (isLight ? 'rgba(0,0,0,0.4)' : 'rgba(0,0,0,0.6)'),
                                 backdropFilter: 'blur(4px)',
                                 WebkitBackdropFilter: 'blur(4px)',
                                 zIndex: 49,
