@@ -30,6 +30,11 @@ export function DailyNewspaperModal({ manualOpen, preventAutoOpen, onClose }: { 
     const [debugHasPlayed, setDebugHasPlayed] = useState<boolean | null>(null);
     const [debugIsSolved, setDebugIsSolved] = useState<boolean | null>(null);
     const [initialAnimDone, setInitialAnimDone] = useState(false);
+    const [isClosing, setIsClosing] = useState(false); // For exit animations
+    // Debug toggles for performance testing
+    const [disableBackdropBlur, setDisableBackdropBlur] = useState(false);
+    const [disableTierEmoji, setDisableTierEmoji] = useState(false);
+    const [disableGlow, setDisableGlow] = useState(false);
     const isMobile = useIsMobile();
     const isLight = theme === 'light';
 
@@ -41,8 +46,9 @@ export function DailyNewspaperModal({ manualOpen, preventAutoOpen, onClose }: { 
     const displayHasPlayed = debugHasPlayed ?? hasPlayedToday;
     const displayIsSolved = debugIsSolved ?? isSolved;
 
-    // Check if any debug mode is active - skip animations entirely in debug mode
-    const isDebugMode = debugStreak !== null || debugHasPlayed !== null || debugIsSolved !== null;
+    // Skip Framer Motion animations on mobile to prevent freezing
+    // Desktop keeps full animations
+    const skipAnimations = isMobile;
 
     // Determine streak tier for effects
     const getStreakTier = (s: number): 'legendary' | 'master' | 'veteran' | 'blazing' | 'none' => {
@@ -273,11 +279,19 @@ export function DailyNewspaperModal({ manualOpen, preventAutoOpen, onClose }: { 
     }, [manualOpen, hasPlayedToday, preventAutoOpen]);
 
     const handleClose = () => {
-        setIsOpen(false);
-        if (onClose) onClose();
-        if (dontShowAgain) {
-            localStorage.setItem('daily_newspaper_suppressed', 'true');
-        }
+        // Trigger exit animations first
+        setIsClosing(true);
+        // Wait for animations to complete before actually closing (snappy!)
+        const closeDelay = isMobile ? 280 : 380;
+        setTimeout(() => {
+            setIsOpen(false);
+            setIsClosing(false);
+            setInitialAnimDone(false); // Reset for next open
+            if (onClose) onClose();
+            if (dontShowAgain) {
+                localStorage.setItem('daily_newspaper_suppressed', 'true');
+            }
+        }, closeDelay);
     };
 
     const handlePlay = () => {
@@ -317,35 +331,43 @@ export function DailyNewspaperModal({ manualOpen, preventAutoOpen, onClose }: { 
                 </DialogDescription>
 
                 {/* 1. Blurred Darkening Background - Full screen via portal, fades in after newspaper animation */}
-                {displayHasPlayed && displayIsSolved && typeof document !== 'undefined' && createPortal(
-                    isDebugMode ? (
-                        // Static version for debug mode
+                {!disableBackdropBlur && displayHasPlayed && displayIsSolved && typeof document !== 'undefined' && createPortal(
+                    skipAnimations ? (
+                        // Mobile version with CSS animations - colored backdrop
                         <div
-                            className="fixed inset-0 pointer-events-none"
+                            className={cn(
+                                "fixed inset-0 pointer-events-none transition-opacity duration-300",
+                                isClosing ? "opacity-0" : "animate-in fade-in duration-500 ease-out"
+                            )}
                             style={{
-                                backgroundColor: isLight ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.5)',
-                                backdropFilter: isMobile ? 'blur(4px)' : 'blur(8px)',
-                                WebkitBackdropFilter: isMobile ? 'blur(4px)' : 'blur(8px)',
+                                // Tier-colored tint using particleConfig colors (same as desktop glow)
+                                backgroundColor: displayStreak > 0
+                                    ? `${particleConfig.gradientColors.from}${isLight ? '50' : '70'}`
+                                    : (isLight ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.5)'),
+                                backdropFilter: 'blur(4px)',
+                                WebkitBackdropFilter: 'blur(4px)',
                                 zIndex: 49,
+                                animationDelay: isClosing ? '0ms' : '200ms',
+                                animationFillMode: 'backwards',
                             }}
                         />
                     ) : (
-                        // Animated version for normal mode
+                        // Desktop animated version
                         <motion.div
                             key="blurred-bg"
                             className="fixed inset-0 pointer-events-none"
                             style={{
                                 backgroundColor: isLight ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.5)',
-                                backdropFilter: isMobile ? 'blur(4px)' : 'blur(8px)',
-                                WebkitBackdropFilter: isMobile ? 'blur(4px)' : 'blur(8px)',
+                                backdropFilter: 'blur(8px)',
+                                WebkitBackdropFilter: 'blur(8px)',
                                 zIndex: 49,
                             }}
                             initial={initialAnimDone ? { opacity: 1 } : { opacity: 0 }}
-                            animate={{ opacity: 1 }}
+                            animate={{ opacity: isClosing ? 0 : 1 }}
                             transition={{
-                                duration: initialAnimDone ? 0 : 0.5,
-                                delay: initialAnimDone ? 0 : getDelay(1.2, 0.3),
-                                ease: "easeOut",
+                                duration: isClosing ? 0.25 : (initialAnimDone ? 0 : 0.5),
+                                delay: isClosing ? 0 : (initialAnimDone ? 0 : 1.3),
+                                ease: isClosing ? [0.4, 0, 1, 1] : "easeOut",
                             }}
                         />
                     ),
@@ -361,7 +383,7 @@ export function DailyNewspaperModal({ manualOpen, preventAutoOpen, onClose }: { 
                             animate={{ scale: 1.5, opacity: 1 }}
                             transition={{
                                 duration: initialAnimDone ? 0.2 : 0.6,
-                                delay: getDelay(1.2),
+                                delay: initialAnimDone ? 0 : 1.3, // After newspaper spin (1.2s)
                                 ease: [0.34, 1.56, 0.64, 1], // spring-like
                             }}
                             className="w-[400%] h-[400%] text-black"
@@ -395,58 +417,93 @@ export function DailyNewspaperModal({ manualOpen, preventAutoOpen, onClose }: { 
                 )}
 
                 {/* Floating Emoji - Different per tier */}
-                {streakTier !== 'none' && displayHasPlayed && displayIsSolved && (
-                    isDebugMode ? (
-                        // Static version for debug mode - no animations
+                {!disableTierEmoji && streakTier !== 'none' && displayHasPlayed && displayIsSolved && (
+                    skipAnimations ? (
+                        // Mobile version with CSS animations (no Framer Motion to prevent freeze)
                         <div
-                            className="absolute top-[-45px] left-1/2 -translate-x-1/2 z-[60] text-4xl sm:text-5xl"
+                            className="absolute top-[-60px] left-1/2 -translate-x-1/2 z-[60] text-6xl animate-in zoom-in-50 slide-in-from-top-12 fade-in duration-700 ease-out"
                             style={{
-                                filter: isMobile
-                                    ? `drop-shadow(0 0 8px ${streakTier === 'legendary' ? '#fbbf24' : streakTier === 'master' ? '#a855f7' : '#f97316'})`
-                                    : `drop-shadow(0 0 12px ${streakTier === 'legendary' ? '#fbbf24' : streakTier === 'master' ? '#a855f7' : '#f97316'})`
+                                animationDelay: '300ms',
+                                animationFillMode: 'backwards',
                             }}
                         >
-                            {streakTier === 'legendary' ? '👑' :
-                                streakTier === 'master' ? '⚡' : '🔥'}
+                            <div
+                                className="relative"
+                                style={{
+                                    animation: 'floatEmoji 3s ease-in-out infinite',
+                                }}
+                            >
+                                {/* Optimized glow effect using a pseudo-element approach via wrapper */}
+                                <div
+                                    className="absolute inset-0 blur-md opacity-70 -z-10"
+                                    style={{
+                                        background: streakTier === 'legendary'
+                                            ? 'radial-gradient(circle, #fbbf24 0%, transparent 70%)'
+                                            : streakTier === 'master'
+                                                ? 'radial-gradient(circle, #a855f7 0%, transparent 70%)'
+                                                : 'radial-gradient(circle, #f97316 0%, transparent 70%)',
+                                        transform: 'scale(1.8)',
+                                    }}
+                                />
+                                <span
+                                    style={{
+                                        filter: `drop-shadow(0 0 6px ${streakTier === 'legendary' ? '#fbbf24' : streakTier === 'master' ? '#a855f7' : '#f97316'})`,
+                                    }}
+                                >
+                                    {streakTier === 'legendary' ? '👑' :
+                                        streakTier === 'master' ? '⚡' : '🔥'}
+                                </span>
+                            </div>
+                            {/* CSS Keyframes injected via style tag */}
+                            <style>{`
+                                @keyframes floatEmoji {
+                                    0%, 100% { transform: translateY(0) rotate(-3deg) scale(1); }
+                                    25% { transform: translateY(-6px) rotate(2deg) scale(1.05); }
+                                    50% { transform: translateY(-3px) rotate(-2deg) scale(1.02); }
+                                    75% { transform: translateY(-8px) rotate(3deg) scale(1.08); }
+                                }
+                            `}</style>
                         </div>
                     ) : (
-                        // Animated version for normal mode
+                        // Desktop animated version
                         <motion.div
                             key="floating-emoji"
-                            className="absolute top-[-45px] left-1/2 z-[60] text-4xl sm:text-5xl"
-                            initial={initialAnimDone ? false : { y: -80, x: '-50%', opacity: 0 }}
+                            className="absolute top-[-55px] left-1/2 z-[60] text-5xl sm:text-6xl"
+                            initial={initialAnimDone ? false : { y: -120, x: '-50%', opacity: 0, scale: 0.5 }}
                             animate={{
                                 y: 0,
                                 x: '-50%',
                                 opacity: 1,
+                                scale: 1,
                             }}
                             transition={{
-                                duration: initialAnimDone ? 0 : 1,
-                                ease: "easeOut",
-                                delay: getDelay(0.5),
+                                duration: initialAnimDone ? 0 : 0.8,
+                                ease: [0.34, 1.56, 0.64, 1], // spring bounce
+                                delay: initialAnimDone ? 0 : 1.4,
                             }}
                         >
                             <motion.div
                                 animate={{
-                                    y: [-3, 3, -3],
-                                    rotate: [-3, 3, -3],
+                                    y: [-4, 6, -2, 8, -4],
+                                    rotate: [-4, 3, -2, 4, -4],
+                                    scale: [1, 1.06, 1.02, 1.08, 1],
                                 }}
                                 transition={{
-                                    duration: 2,
+                                    duration: 4,
                                     repeat: Infinity,
                                     ease: "easeInOut",
-                                    delay: initialAnimDone ? 0 : getDelay(1.5),
+                                    delay: initialAnimDone ? 0 : 2.2,
                                 }}
                                 style={{
-                                    // Simpler shadow on mobile for performance
-                                    filter: isMobile
-                                        ? `drop-shadow(0 0 8px ${streakTier === 'legendary' ? '#fbbf24' : streakTier === 'master' ? '#a855f7' : '#f97316'})`
-                                        : `drop-shadow(0 0 12px ${streakTier === 'legendary' ? '#fbbf24' :
-                                            streakTier === 'master' ? '#a855f7' :
-                                                '#f97316'
-                                        }) drop-shadow(0 0 24px ${streakTier === 'legendary' ? '#f59e0b' :
+                                    filter: `drop-shadow(0 0 16px ${streakTier === 'legendary' ? '#fbbf24' :
+                                        streakTier === 'master' ? '#a855f7' :
+                                            '#f97316'
+                                        }) drop-shadow(0 0 32px ${streakTier === 'legendary' ? '#f59e0b' :
                                             streakTier === 'master' ? '#7c3aed' :
                                                 '#ea580c'
+                                        }) drop-shadow(0 0 48px ${streakTier === 'legendary' ? '#fbbf2480' :
+                                            streakTier === 'master' ? '#a855f780' :
+                                                '#f9731680'
                                         })`
                                 }}
                             >
@@ -479,13 +536,20 @@ export function DailyNewspaperModal({ manualOpen, preventAutoOpen, onClose }: { 
                 {displayStreak < 7 && displayHasPlayed && displayIsSolved && (
                     <div className="absolute top-[-50px] left-1/2 -translate-x-1/2 flex items-center gap-0.5 z-20">
                         {Array.from({ length: 7 }).map((_, i) => (
-                            isDebugMode ? (
-                                // Static version for debug mode
-                                <div key={`roadmap-${i}`} className="flex items-center">
+                            skipAnimations ? (
+                                // Mobile version with CSS animations (no Framer Motion to prevent freeze)
+                                <div
+                                    key={`roadmap-${i}`}
+                                    className="flex items-center animate-in slide-in-from-left-4 fade-in duration-300 ease-out"
+                                    style={{
+                                        animationDelay: `${300 + i * 80}ms`,
+                                        animationFillMode: 'backwards',
+                                    }}
+                                >
                                     {i < displayStreak ? (
                                         <div
-                                            className="text-2xl sm:text-3xl"
-                                            style={{ filter: 'drop-shadow(0 0 6px rgba(249,115,22,0.9))' }}
+                                            className="text-2xl sm:text-3xl animate-pulse"
+                                            style={{ animationDuration: '1.5s' }}
                                         >
                                             🔥
                                         </div>
@@ -506,12 +570,12 @@ export function DailyNewspaperModal({ manualOpen, preventAutoOpen, onClose }: { 
                                 <motion.div
                                     key={`roadmap-${i}`}
                                     className="flex items-center"
-                                    initial={initialAnimDone ? false : { opacity: 0, scale: 0, x: -20 }}
+                                    initial={initialAnimDone ? false : { opacity: 0, scale: 0.5, x: -30 }}
                                     animate={{ opacity: 1, scale: 1, x: 0 }}
                                     transition={{
-                                        duration: initialAnimDone ? 0 : 0.3,
-                                        delay: initialAnimDone ? 0 : (getDelay(1.4, 0.5) + i * 0.1),
-                                        ease: [0.34, 1.56, 0.64, 1], // Spring-like
+                                        duration: initialAnimDone ? 0 : 0.4,
+                                        delay: initialAnimDone ? 0 : (1.4 + i * 0.12), // After newspaper (1.2s) + stagger
+                                        ease: [0.34, 1.56, 0.64, 1], // spring bounce
                                     }}
                                 >
                                     {/* Flame emoji for completed, empty circle for remaining */}
@@ -542,9 +606,11 @@ export function DailyNewspaperModal({ manualOpen, preventAutoOpen, onClose }: { 
                     </div>
                 )}
 
-                {/* 3. Background Glow - Fades in after newspaper animation */}
-                {displayStreak > 0 && displayHasPlayed && displayIsSolved && (
-                    isDebugMode ? (
+                {/* 3. Background Glow - Desktop version only (mobile uses colored backdrop instead) */}
+
+                {/* 3. Background Glow - Desktop version (larger, animated) */}
+                {!isMobile && !disableGlow && displayStreak > 0 && displayHasPlayed && displayIsSolved && (
+                    skipAnimations ? (
                         // Static version for debug mode
                         <div
                             className="absolute inset-[-50%] pointer-events-none -z-20"
@@ -571,7 +637,7 @@ export function DailyNewspaperModal({ manualOpen, preventAutoOpen, onClose }: { 
                                 duration: 3,
                                 repeat: Infinity,
                                 ease: "easeInOut",
-                                delay: initialAnimDone ? 0 : getDelay(1.4, 0.5),
+                                delay: initialAnimDone ? 0 : 1.3, // After newspaper spin
                             }}
                         />
                     )
@@ -583,7 +649,7 @@ export function DailyNewspaperModal({ manualOpen, preventAutoOpen, onClose }: { 
                         className="fixed inset-0 pointer-events-none z-[60] overflow-hidden"
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
-                        transition={{ duration: initialAnimDone ? 0.2 : 0.5, delay: getDelay(1.4) }}
+                        transition={{ duration: initialAnimDone ? 0.2 : 0.5, delay: initialAnimDone ? 0 : 1.3 }}
                     >
                         {/* Grain Overlay */}
                         <div
@@ -631,16 +697,30 @@ export function DailyNewspaperModal({ manualOpen, preventAutoOpen, onClose }: { 
 
                 <motion.div
                     ref={newspaperRef}
-                    initial={isMobile ? undefined : { scale: 0, rotate: -720, opacity: 0 }}
-                    animate={isMobile ? undefined : { scale: 1, rotate: 0, opacity: 1 }}
-                    transition={isMobile ? undefined : {
-                        duration: 1.2,
-                        ease: [0.5, 0, 1, 1], // Custom bezier for slow start, fast end (accelerating)
-                    }}
+                    initial={isMobile ? { scale: 0.5, opacity: 0, y: -50 } : { scale: 0, rotate: -720, opacity: 0 }}
+                    animate={isClosing
+                        ? (isMobile
+                            // Mobile exit: quick flip and fly away
+                            ? { scale: 0.3, opacity: 0, y: 150, rotate: 15, x: 30 }
+                            // Desktop exit: fast spin-shrink and fly up
+                            : { scale: 0, rotate: 180, opacity: 0, y: -120 })
+                        : (isMobile
+                            // Mobile enter: bouncy pop in
+                            ? { scale: 1, opacity: 1, y: 0 }
+                            // Desktop enter: spin in
+                            : { scale: 1, rotate: 0, opacity: 1 })}
+                    transition={isClosing
+                        ? {
+                            duration: isMobile ? 0.25 : 0.35,
+                            ease: [0.4, 0, 1, 1] // Accelerating out - snappy!
+                        }
+                        : (isMobile
+                            ? { duration: 0.5, ease: [0.34, 1.56, 0.64, 1] } // Spring for mobile
+                            : { duration: 1.2, ease: [0.5, 0, 1, 1] })} // Spin for desktop
                     className={cn(
                         "relative overflow-hidden border-4 will-change-transform z-[53]",
                         // Less intense shadow on mobile for performance
-                        isMobile ? "shadow-lg animate-in zoom-in-50 fade-in-0 duration-500 ease-out" : "shadow-2xl",
+                        isMobile ? "shadow-lg" : "shadow-2xl",
                         isLight ? "bg-[#f4ebd0] border-[#2b1409] text-[#2b1409]" : "bg-[#e0d6b9] border-black text-black"
                     )}
                 >
@@ -896,6 +976,40 @@ export function DailyNewspaperModal({ manualOpen, preventAutoOpen, onClose }: { 
                             )}
                         >
                             Solved: {debugIsSolved === null ? 'Real' : debugIsSolved ? '✓' : '✗'}
+                        </button>
+                        <span className="text-white text-[10px] mx-1">|</span>
+                        <button
+                            onClick={() => setDisableBackdropBlur(v => !v)}
+                            className={cn(
+                                "px-2 py-0.5 text-[10px] font-bold rounded border",
+                                disableBackdropBlur
+                                    ? "bg-red-500 text-white border-red-500"
+                                    : "bg-transparent text-white border-white/50 hover:bg-white/20"
+                            )}
+                        >
+                            Blur: {disableBackdropBlur ? 'OFF' : 'ON'}
+                        </button>
+                        <button
+                            onClick={() => setDisableTierEmoji(v => !v)}
+                            className={cn(
+                                "px-2 py-0.5 text-[10px] font-bold rounded border",
+                                disableTierEmoji
+                                    ? "bg-red-500 text-white border-red-500"
+                                    : "bg-transparent text-white border-white/50 hover:bg-white/20"
+                            )}
+                        >
+                            Emoji: {disableTierEmoji ? 'OFF' : 'ON'}
+                        </button>
+                        <button
+                            onClick={() => setDisableGlow(v => !v)}
+                            className={cn(
+                                "px-2 py-0.5 text-[10px] font-bold rounded border",
+                                disableGlow
+                                    ? "bg-red-500 text-white border-red-500"
+                                    : "bg-transparent text-white border-white/50 hover:bg-white/20"
+                            )}
+                        >
+                            Glow: {disableGlow ? 'OFF' : 'ON'}
                         </button>
                     </div>
                 )}
